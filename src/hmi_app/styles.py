@@ -24,14 +24,12 @@ class FoodWasteGUI:
 
         # 단계별 UI 진행상황 업데이트 
         self.steps=[
-
             "통 파지",
             "배출 위치 이동",
             "음식물 배출",
             "세척 중",
             "초기 위치 복귀",
             "작업 완료"
-
         ]
         self.step_labels=[]
         self.create_ui()
@@ -50,16 +48,14 @@ class FoodWasteGUI:
             fg_color="#d8c6ff"
         )
         
-        # 상단 제목 파트 
+        # 상단 제목 파트 디자인 
         title=ctk.CTkLabel(
-
             self.root,
             text="음식물 처리 시스템",
             font=("맑은 고딕",35,"bold")
-
         )
         title.pack(
-            pady=(30,10)
+            pady=(30,10)    # 두는 위치 
         )
 
         # 작업 유형 선택 파트 
@@ -71,7 +67,7 @@ class FoodWasteGUI:
 
         subtitle.pack()
 
-        # 프레임 
+        # 프레임 == 배경 
         card=ctk.CTkFrame(
             self.root,
             width=800,
@@ -114,7 +110,7 @@ class FoodWasteGUI:
             y=50
         )
 
-        # 진행 상황 
+        # 진행 상황 표시 UI (초기 상태)
         self.status=ctk.CTkLabel(
             self.root,
             text="대기중",
@@ -145,6 +141,7 @@ class FoodWasteGUI:
             pady=50
         )
 
+        # 단계별 진행 상태 업데이트 및 화살표로 진행 방향 표시 
         for i,step in enumerate(self.steps):
             label=ctk.CTkLabel(
                 line_frame,
@@ -193,6 +190,7 @@ class FoodWasteGUI:
         self.is_running=True
         self.progress.set(0)
 
+        # 백그라운드에서 동작이 되지 않게 하기 위한 스레드 코
         thread=threading.Thread(
             target=self.run_process,
             args=(mode,)
@@ -293,5 +291,5 @@ class FoodWasteGUI:
         self.home_button.pack(
             pady=20
         )
-        
+
 FoodWasteGUI()
