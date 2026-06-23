@@ -7,6 +7,7 @@ ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 
 
+# 전체적인 초안 GUI 
 class FoodWasteGUI:
 
     def __init__(self):
@@ -25,6 +26,7 @@ class FoodWasteGUI:
         self.is_running=False
         self.emergency_stop=False
 
+        # 단계별 UI 진행상황 업데이트 
         self.steps=[
 
             "통 파지",
@@ -43,7 +45,7 @@ class FoodWasteGUI:
         self.root.mainloop()
 
 
-
+    # UI 디자인 파트 
     def create_ui(self):
 
         for widget in self.root.winfo_children():
@@ -57,7 +59,8 @@ class FoodWasteGUI:
         self.root.configure(
             fg_color="#d8c6ff"
         )
-
+        
+        # 상단 제목 파트 
         title=ctk.CTkLabel(
 
             self.root,
@@ -70,7 +73,7 @@ class FoodWasteGUI:
             pady=(30,10)
         )
 
-
+        # 작업 유형 선택 파트 
         subtitle=ctk.CTkLabel(
 
             self.root,
@@ -82,7 +85,7 @@ class FoodWasteGUI:
         subtitle.pack()
 
 
-
+        # 프레임 
         card=ctk.CTkFrame(
 
             self.root,
@@ -100,7 +103,7 @@ class FoodWasteGUI:
         )
 
 
-
+        # 버튼 디자인 
         btn1=ctk.CTkButton(
 
             card,
@@ -147,7 +150,7 @@ class FoodWasteGUI:
             y=50
         )
 
-
+        # 진행 상황 
         self.status=ctk.CTkLabel(
 
             self.root,
@@ -162,7 +165,7 @@ class FoodWasteGUI:
             pady=20
         )
 
-
+        # 진행 바 디자인 
         self.progress=ctk.CTkProgressBar(
 
             self.root,
@@ -254,7 +257,7 @@ class FoodWasteGUI:
         error_btn.pack()
 
 
-
+    # 시작 버튼 > 동작 
     def start(self,mode):
 
         if self.is_running:
@@ -274,7 +277,7 @@ class FoodWasteGUI:
         thread.start()
 
 
-
+    # 진행 함수 
     def run_process(self,mode):
 
         total=len(self.steps)
@@ -308,7 +311,7 @@ class FoodWasteGUI:
         )
 
 
-
+    # 단계별 UI 업데이트 
     def update_ui(
 
             self,
@@ -346,7 +349,7 @@ class FoodWasteGUI:
                 )
 
 
-
+    
     def trigger_drop_error(self):
 
         self.emergency_stop=True
