@@ -34,6 +34,10 @@ VELOCITYX, ACCX = 30, 30
 VELOCITYJ, ACCJ = 30, 30
 SLOW_VELX, SLOW_ACCX = 15, 20
 
+# 새로 추가: 털기 왕복 동작은 일반 이송보다 빠르게 수행한다.
+SHAKE_VEL, SHAKE_ACC = 30, 30
+SHAKE_REPEAT_COUNT = 3
+
 # 충돌/이탈 감지 기준
 COLLISION_FORCE_N = 35.0      # F/T 센서 외력 임계값[N]
 GRIPPER_INPUT_IDX = 1         # 실제 파지 확인용 Tool DI 번호. 현장 배선에 맞게 수정
@@ -75,22 +79,38 @@ class ErrorCode(str, Enum):
 # [좌표 정의]
 # ==============================================================================
 def coordinates():
-    """현장 교시 후 반드시 수정할 좌표 묶음."""
+    """실기기에서 측정한 좌표 묶음."""
     return {
-        # 초기 대기 위치
-        "home": posj(9.46, 1.33, 103.26, -0.75, 74.64, 2.23),
-
         # 수거통 픽업 위치
-        "bin_approach": posx(423.65, -3.58, 330.00, 97.76, -178.69, 95.48),
-        "bin_pick":     posx(424.74, -4.82, 266.78, 80.35, -178.76, 78.04),
+        "bin_approach": posx(457.76, -244.42, 59.15, 92.33, 86.93, -86.84),
+        "bin_pick": posx(466.08, -199.23, 66.98, 95.02, 88.55, -85.96),
+        "bin_pick_top": posx(466.04, -196.34, 199.37, 92.36, 90.60, -89.12),
 
-        # 배출 위치. dump_base에서 자세축을 변경해 통을 기울인다.
-        "dump_approach": posx(277.21, 147.71, 330.00, 103.54, -178.79, 101.07),
-        "dump_base":     posx(277.77, 147.23, 300.00, 89.86, -178.71, 87.42),
+        # 음식물 배출 및 털기 위치
+        "dump_approach": posx(466.08, -4.19, 199.37, 90.27, 92.28, -87.35),
+        "dump_tilt": posj(-15.97, 35.06, 102.51, 76.35, 99.09, -80.00),
+        "shake_weak_x": posx(453.60, -0.61, 238.28, 90.26, 92.19, 54.22),
+        "shake_weak_j": posj(-15.97, 29.29, 103.47, 77.22, 100.26, -80.00),
+        "shake_strong_j": posj(-15.93, 28.53, 103.30, 77.89, 104.24, -80.00),
+        "shake_strong_x": posx(466.12, -4.19, 194.30, 90.26, 92.28, 58.99),
+
+        # 배출 위치에서 세척 위치로 이동할 때의 경유점
+        "way_point": posx(311.45, -272.72, 129.42, 57.31, 88.51, -85.82),
 
         # 세척 위치
-        "wash_approach": posx(360.00, 220.00, 330.00, 90.00, -180.00, 90.00),
-        "wash_base":     posx(360.00, 220.00, 285.00, 90.00, -180.00, 90.00),
+        "wash_approach": posx(454.14, 12.88, 112.29, 0.72, 93.48, -87.55),
+        "wash_place": posx(482.61, 13.07, 112.91, 0.82, 93.14, -87.60),
+        "wash_pick": posx(484.18, 8.30, 91.97, 2.53, 93.50, -88.50),
+        "wash_close": posx(685.11, -87.56, 361.56, 84.15, 134.72, -92.30),
+        "wash_open": posj(-14.96, 55.93, 21.05, 46.65, 105.56, -99.25),
+
+        # 세척수 배출 위치
+        "water_out_approach": posx(557.53, -170.89, 145.02, 90.10, 94.08, -91.72),
+        "water_out_tilt": posj(-28.34, 54.57, 71.90, 68.79, 109.80, -90.00),
+        "water_out_shake": posx(554.47, -173.86, 182.70, 89.97, 91.09, 27.51),
+
+        # 초기 대기 및 종료 위치
+        "home": posj(-0.45, 0.66, 88.77, -0.77, 87.93, -234.35),
     }
 
 
@@ -106,6 +126,7 @@ def init_robot_api():
     _ds = dsr_module
     posx = posx_class
     posj = posj_class
+
 
     required_services = [
         _ds._ros2_set_current_tool,
@@ -136,6 +157,7 @@ def init_robot_api():
             raise RuntimeError("Tool Weight_2FG is not registered on the real robot")
         if _ds.set_tcp("2FG_TCP") != 0:
             raise RuntimeError("2FG_TCP is not registered on the real robot")
+
     elif operation_mode == "virtual":
         g_node.get_logger().info("Virtual mode: skip real Tool/TCP registration")
     else:
@@ -337,7 +359,6 @@ def pick_bin():
     status.set_state(ProcessState.MOVING, "수거통 위치 이동 및 파지")
     coords = coordinates()
 
-    safe_movej(coords["home"])
     safe_movel(coords["bin_approach"])
     safe_movel(coords["bin_pick"], vel=SLOW_VELX, acc=SLOW_ACCX)
 
@@ -349,15 +370,7 @@ def pick_bin():
         gripper_open()
         raise RuntimeError("수거통의 위치를 확인해 주세요")
 
-    safe_movel(coords["bin_approach"], require_grasp=True)
-
-
-def make_tilt_pose(base, tilt_deg: float, shake_deg: float = 0.0):
-    """통 배출용 자세 생성. B축을 tilt, C축을 shake로 사용한다."""
-    p = posx(base)
-    p[4] = base[4] + tilt_deg
-    p[5] = base[5] + shake_deg
-    return p
+    safe_movel(coords["bin_pick_top"], require_grasp=True)
 
 
 def run_dump_motion(mode: int):
@@ -366,30 +379,29 @@ def run_dump_motion(mode: int):
     coords = coordinates()
 
     if mode == DUMP_MODE_NORMAL:
-        tilt_deg = 45.0
-        shake_count = 3
-        shake_amp = 5.0
+        shake_x = coords["shake_weak_x"]
     elif mode == DUMP_MODE_STRONG:
-        tilt_deg = 60.0
-        shake_count = 6
-        shake_amp = 10.0
+        shake_x = coords["shake_strong_x"]
     else:
         raise ValueError("dump mode must be 1(normal) or 2(strong)")
 
     safe_movel(coords["dump_approach"], require_grasp=True)
-    safe_movel(coords["dump_base"], require_grasp=True)
+    safe_movej(coords["dump_tilt"], vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
 
-    tilted = make_tilt_pose(coords["dump_base"], tilt_deg)
-    safe_movel(tilted, vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
+    # 새로 추가: 모드에 맞는 털기 좌표와 dump_tilt를 빠르게 왕복한다.
+    for idx in range(SHAKE_REPEAT_COUNT):
+        status.set_state(
+            ProcessState.DUMPING,
+            f"shaking {idx + 1}/{SHAKE_REPEAT_COUNT}",
+        )
+        safe_movel(shake_x, vel=SHAKE_VEL, acc=SHAKE_ACC, require_grasp=True)
+        safe_movej(
+            coords["dump_tilt"],
+            vel=SHAKE_VEL,
+            acc=SHAKE_ACC,
+            require_grasp=True,
+        )
 
-    for idx in range(shake_count):
-        left = make_tilt_pose(coords["dump_base"], tilt_deg, -shake_amp)
-        right = make_tilt_pose(coords["dump_base"], tilt_deg, shake_amp)
-        status.set_state(ProcessState.DUMPING, f"shaking {idx + 1}/{shake_count}")
-        safe_movel(left, vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
-        safe_movel(right, vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
-
-    safe_movel(coords["dump_base"], vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
     safe_movel(coords["dump_approach"], require_grasp=True)
 
 
@@ -397,35 +409,77 @@ def execute_wash():
     status.set_state(ProcessState.WASHING, "세척 위치 이동")
     coords = coordinates()
 
+    safe_movel(coords["way_point"], require_grasp=True)
     safe_movel(coords["wash_approach"], require_grasp=True)
-    safe_movel(coords["wash_base"], require_grasp=True)
+    safe_movel(coords["wash_place"], require_grasp=True)
 
-    status.set_state(ProcessState.WASHING, "급수 2초")
-    valve_open()
-    safe_wait(2.0, require_grasp=True)
-    valve_close()
-
-    status.set_state(ProcessState.WASHING, "가벼운 세척 흔들기")
-    for idx in range(4):
-        p1 = posx(coords["wash_base"])
-        p2 = posx(coords["wash_base"])
-        p1[5] -= 7.0
-        p2[5] += 7.0
-        safe_movel(p1, vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
-        safe_movel(p2, vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
-
-    # 오수 배출: 세척 위치에서 살짝 기울여 배수
-    drain = make_tilt_pose(coords["wash_base"], 35.0)
-    safe_movel(drain, vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
-    safe_wait(1.0, require_grasp=True)
-    safe_movel(coords["wash_approach"], require_grasp=True)
-
-
-def return_home_and_complete():
-    coords = coordinates()
-    status.set_state(ProcessState.MOVING, "초기 위치 복귀")
-    safe_movej(coords["home"], require_grasp=True)
+    # 새로 추가: 세척 위치에 수거통을 내려놓고 수도 레버를 조작한다.
     gripper_open()
+    safe_movel(coords["wash_approach"])
+    safe_movel(coords["way_point"])
+    safe_movel(coords["wash_close"])
+    gripper_close()
+    safe_movej(coords["wash_open"], vel=SLOW_VELX, acc=SLOW_ACCX)
+    safe_movel(coords["wash_close"])
+    gripper_open()
+
+    # 새로 추가: 세척이 끝난 수거통을 다시 파지한다.
+    safe_movel(coords["way_point"])
+    safe_movel(coords["wash_approach"])
+    safe_movel(coords["wash_pick"], vel=SLOW_VELX, acc=SLOW_ACCX)
+    gripper_close()
+    safe_wait(0.8)
+
+    if not is_grasped():
+        status.publish_safety(ErrorCode.ERR_PICK, "세척 후 수거통 파지 불량")
+        gripper_open()
+        raise RuntimeError("세척 후 수거통의 위치를 확인해 주세요")
+
+    safe_movel(coords["wash_approach"], require_grasp=True)
+    safe_movel(coords["way_point"], require_grasp=True)
+
+    # 오수 배출: 교시된 배출/기울임/흔들기 좌표를 순서대로 사용한다.
+    safe_movel(coords["water_out_approach"], require_grasp=True)
+    safe_movej(coords["water_out_tilt"], vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
+
+    # 새로 추가: water_out_tilt와 water_out_shake를 빠르게 왕복해 물을 턴다.
+    for idx in range(SHAKE_REPEAT_COUNT):
+        status.set_state(
+            ProcessState.WASHING,
+            f"water shaking {idx + 1}/{SHAKE_REPEAT_COUNT}",
+        )
+        safe_movel(
+            coords["water_out_shake"],
+            vel=SHAKE_VEL,
+            acc=SHAKE_ACC,
+            require_grasp=True,
+        )
+        safe_movej(
+            coords["water_out_tilt"],
+            vel=SHAKE_VEL,
+            acc=SHAKE_ACC,
+            require_grasp=True,
+        )
+
+    safe_movel(coords["water_out_approach"], require_grasp=True)
+
+
+def return_bin_and_complete():
+    coords = coordinates()
+
+    # 새로 추가: 세척과 배수가 끝난 수거통을 원래 위치에 내려놓는다.
+    status.set_state(ProcessState.MOVING, "수거통 원위치 및 초기 위치 복귀")
+    safe_movel(coords["way_point"], require_grasp=True)
+    safe_movel(coords["bin_approach"], require_grasp=True)
+    safe_movel(
+        coords["bin_pick"],
+        vel=SLOW_VELX,
+        acc=SLOW_ACCX,
+        require_grasp=True,
+    )
+    gripper_open()
+    safe_movel(coords["bin_pick_top"])
+    safe_movej(coords["home"])
     status.set_state(ProcessState.COMPLETE, "배출 및 세척 완료")
 
 
@@ -435,7 +489,7 @@ def run_process(mode: int):
         pick_bin()
         run_dump_motion(mode)
         execute_wash()
-        return_home_and_complete()
+        return_bin_and_complete()
         return True, "배출 및 세척 완료"
     except Exception as exc:
         status.set_state(ProcessState.ERROR, str(exc))

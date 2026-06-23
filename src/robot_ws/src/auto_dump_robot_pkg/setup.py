@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'motion=auto_dump_bot_pkg.auto_dump_bot_pkg:main'
+            'motion=auto_dump_robot_pkg.motion_controller:main'
         ],
     },
 )
