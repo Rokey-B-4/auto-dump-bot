@@ -1,6 +1,6 @@
 ## 📌 안내 
 ### 컴퓨터 켜서 작업 시작할 때: 
-무조건 git pull origin main을 먼저 해서 다른 팀원이 고친 최신 코드를 내 노트북으로 가져옵니다.
+무조건 git pull origin main을 먼저 해서 다른 팀원이 고친 최신 코드를 내 노트북으로 가져옵니다~!
 
 ### 내 기능 구현이 끝났을 때:
 git add .
@@ -50,5 +50,45 @@ git push origin main
     - `fix/` : 버그 수정 (예: `fix/token-error`)
     - `docs/` : 문서 작업 (예: `docs/readme`)
     - `refactor/` : 전면적인 코드 구조 개선 (예: `refactor/api-layer`)
- 
-  
+---
+## 📌 Github 작업 프로세스 
+### 1. 최신 코드 가져오기 (시작 전 필수)
+- git checkout main
+- git pull origin main
+
+### 2. 새 브랜치 만들고 이동하기
+**브랜치 생성과 이동을 동시에 하기**
+- git checkout -b 기능이름-또는-이슈번호
+
+### 3. 코드 수정 및 상태 확인
+- git status
+
+### 4. 스테이징 및 커밋 (Commit)
+**변경된 모든 파일을 올릴 때**
+- git add .
+
+**특정 파일만 올릴 때**
+- git add 파일경로/파일명.확장자
+
+**커밋 메시지 작성하기**
+- git commit -m "feat: 로그인 기능 구현"
+
+### 5. 원격 저장소에 푸시 (Push)
+- git push -u origin 내-브랜치-이름
+
+### 6. Pull Request (PR) 생성하기
+푸시가 성공적으로 완료되면, GitHub 웹사이트에 접속
+- 해당 레포지토리(Repository) 페이지로 이동하면 상단에 "Compare & pull request"라는 초록색 버튼이 자동으로 떠 있는 것을 볼 수 있음.
+- 버튼이 보이지 않는다면 Pull requests 탭으로 이동해 "New pull request"를 누른 뒤, 내가 만든 브랜치를 선택함.
+- base 브랜치(코드가 합쳐질 곳, 예: main)와 compare 브랜치(내가 작업한 브랜치)가 올바르게 선택되었는지 확인함.
+- 제목과 어떤 내용을 수정했는지 본문을 상세히 적은 후 "Create pull request"를 누르면 완성!
+---
+## 📌 기타
+### 원격 저장소(origin)의 브랜치 삭제
+- git push origin --delete 브랜치이름
+
+### 원격에서 지워진 브랜치 목록을 로컬에도 반영하여 정리
+- git fetch --prune
+
+
+
