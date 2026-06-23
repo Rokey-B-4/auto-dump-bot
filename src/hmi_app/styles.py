@@ -293,5 +293,5 @@ class FoodWasteGUI:
         self.home_button.pack(
             pady=20
         )
-
+        
 FoodWasteGUI()
