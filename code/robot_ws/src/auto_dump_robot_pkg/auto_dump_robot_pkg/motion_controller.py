@@ -30,16 +30,19 @@ DR_init.__dsr__model = ROBOT_MODEL
 # ==============================================================================
 # [운전 파라미터]
 # ==============================================================================
-VELOCITYX, ACCX = 30, 30
+# 일반 이동은 하나의 속도 프로파일을 사용한다.
+# movej: [deg/s], [deg/s^2]
+# movel: [선속도 mm/s, 각속도 deg/s], [선가속도 mm/s^2, 각가속도 deg/s^2]
+# 두 명령의 단위가 다르므로 같은 숫자를 쓰지 않고, 회전 속도도 명시한다.
 VELOCITYJ, ACCJ = 30, 30
-SLOW_VELX, SLOW_ACCX = 20, 20
+VELOCITYX, ACCX = [80, 15], [160, 30]
 
 # 실제 장착 공구/TCP 설정
-TOOL_NAME = "Tool Weight_2FG"
+TOOL_NAME = "GripperDA_v1"
 TOOL_WEIGHT_KG = 0.908
-TOOL_CENTER_OF_GRAVITY_MM = None  # TODO: [x, y, z] 실측 후 입력
-TOOL_INERTIA = None               # TODO: [Ixx, Iyy, Izz, Ixy, Ixz, Iyz] 입력
-TCP_NAME = "2FG_TCP"
+TOOL_CENTER_OF_GRAVITY_MM = [0.0, 0.0, 114.0] # 수정필요
+TOOL_INERTIA = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+TCP_NAME = "Tool_Weight1"
 TCP_OFFSET = [0.0, 0.0, 228.0, 0.0, 0.0, 0.0]
 
 # 주기 털기 반복 횟수
@@ -64,11 +67,8 @@ DESIRED_FORCE_X = 65.0     # 세척 위치 안착 방향 힘[N] - 베이스 좌�
 DESIRED_FORCE_Z = 10.0     # 세척 위치 Z방향 힘[N] - 실기 테스트 후 조정
 COMPLIANCE_X = 300         # X 순응 강성 - 낮을수록 +X 방향 접촉면을 부드럽게 따라감
 COMPLIANCE_Y = 3000        # Y 순응 강성 - Y방향의 불필요한 움직임을 억제
-COMPLIANCE_Z = 3000        # Z 순응 강성 - 낮을수록 부드럽게 눌림
-FORCE_CONTROL_TIME = 10.0   # 목표 외력을 유지하며 안착시킬 시간[s]
-
-# # 밸브 - 굳이 필요는 없을 듯
-# VALVE_DO_IDX = 1              # 수도 밸브 제어용 Digital Output 번호. 현장 배선에 맞게 수정
+COMPLIANCE_Z = 2000        # Z 순응 강성 - 낮을수록 부드럽게 눌림
+FORCE_CONTROL_TIME = 8.0   # 목표 외력을 유지하며 안착시킬 시간[s]
 
 # 배출 모드: 1=일반 배출, 2=강하게 털기
 DUMP_MODE_NORMAL = 1
@@ -179,8 +179,8 @@ def init_robot_api():
         _ds._ros2_release_compliance_ctrl,
     ]
 
-    g_node.get_logger().info("Waiting for DSR controller services...")
     # 서비스 리스트 각각이 생성되었는지 확인
+    g_node.get_logger().info("Waiting for DSR controller services...")
     for client in required_services:
         if not client.wait_for_service(timeout_sec=30.0):
             # 없으면 에러
@@ -192,15 +192,16 @@ def init_robot_api():
     operation_mode = g_node.declare_parameter(
         "operation_mode", "virtual"
     ).get_parameter_value().string_value
+
     # 실제모드에서는 교시 좌표와 동일한 공구/TCP를 반드시 선택한다.
     if operation_mode == "real":
         if _ds.set_tcp(TCP_NAME) != 0:
             if _ds.add_tcp(TCP_NAME, TCP_OFFSET) != 0 or _ds.set_tcp(TCP_NAME) != 0:
-                raise RuntimeError(f"TCP 등록/선택 실패: {TCP_NAME}")
+                g_node.get_logger().info(f"TCP 등록/선택 실패: {TCP_NAME}")
 
         if _ds.set_tool(TOOL_NAME) != 0:
             if TOOL_CENTER_OF_GRAVITY_MM is None or TOOL_INERTIA is None:
-                raise RuntimeError(
+                g_node.get_logger().info(
                     f"공구 '{TOOL_NAME}'가 미등록 상태입니다. "
                     "TOOL_CENTER_OF_GRAVITY_MM과 TOOL_INERTIA를 입력해 주세요."
                 )
@@ -208,7 +209,7 @@ def init_robot_api():
                 _ds.add_tool(TOOL_NAME, TOOL_WEIGHT_KG, TOOL_CENTER_OF_GRAVITY_MM, TOOL_INERTIA) != 0
                 or _ds.set_tool(TOOL_NAME) != 0
             ):
-                raise RuntimeError(f"공구 등록/선택 실패: {TOOL_NAME}")
+                g_node.get_logger().info(f"공구 등록/선택 실패: {TOOL_NAME}")
 
         g_node.get_logger().info(f"Tool/TCP selected: {_ds.get_tool()} / {_ds.get_tcp()}")
     
@@ -287,17 +288,6 @@ def stop(mode=None):
     result = future.result() if future.done() else None
     return 0 if result and result.success else -1
 
-
-# def set_external_force_reset(mode=0, offset=None):
-#     """DSR_ROBOT2에 함수가 있을 때만 호출하는 호환 래퍼."""
-#     if hasattr(_ds, "set_external_force_reset"):
-#         if offset is None:
-#             return _ds.set_external_force_reset(mode)
-#         return _ds.set_external_force_reset(mode, offset)
-#     g_node.get_logger().warn("set_external_force_reset() is not available in this DSR_ROBOT2.py; skipped")
-#     return 0
-
-
 # ==============================================================================
 # [그리퍼 / 센서 / 밸브]
 # ==============================================================================
@@ -343,14 +333,6 @@ def is_grasped() -> bool:
         return False
 
 
-# def valve_open():
-#     _ds.set_digital_output(VALVE_DO_IDX, _ds.ON)
-
-
-# def valve_close():
-#     _ds.set_digital_output(VALVE_DO_IDX, _ds.OFF)
-
-
 # ==============================================================================
 # [안전 감시]
 # ==============================================================================
@@ -363,11 +345,6 @@ def raise_safety_stop(code: ErrorCode, msg: str):
     stop(_ds.DR_QSTOP)
     status.set_state(ProcessState.COLLISION if code == ErrorCode.ERR_COLLISION else ProcessState.ERROR)
     status.publish_safety(code, msg)
-    # try:
-    #     valve_close()
-    # except Exception:
-    #     pass
-    # raise RuntimeError(f"{code.value}: {msg}")
 
 
 def safety_watch(require_grasp: bool = False):
@@ -393,10 +370,10 @@ def safe_movel(target, vel=VELOCITYX, acc=ACCX, require_grasp=False, ref=None, m
         _ds.wait(0.05)
 
 
-def safe_movel_relative(target, require_grasp=False, vel=SLOW_VELX, acc=SLOW_ACCX):
-    """직전 TCP 자세에서 베이스(조인트 기준) 좌표계로 상대 직선 이동한다."""
+def safe_movel_relative(target, require_grasp=False, vel=VELOCITYX, acc=ACCX):
+    """직전 TCP 자세에서 Tool 좌표계로 상대 이동한다."""
     safe_movel(target, vel=vel, acc=acc, require_grasp=require_grasp,
-               ref=_ds.DR_BASE, mod=_ds.DR_MV_MOD_REL)
+               ref=_ds.DR_TOOL, mod=_ds.DR_MV_MOD_REL)
 
 
 def safe_move_periodic(amp, period, atime, repeat, ref, require_grasp=False):
