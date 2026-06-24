@@ -2,19 +2,27 @@ import customtkinter as ctk
 from CTkMessagebox import CTkMessagebox
 from datetime import datetime
 import os
+from api_service import APIService
+import queue
 
 
 class ManagerGUI:
     # =========================================================================
-    # [SECTION 1] 초기화 및 창 설정 (Initialization)
+    # [SECTION 1] 초기화 및 창 설정
     # =========================================================================
     def __init__(self, reset_callback, main_gui_instance):
         """관리자 모니터링 콘솔 메인 초기화"""
         self.reset_callback = reset_callback
         self.main_gui = main_gui_instance
+        self.api = APIService() # API 통신 인스턴스
 
-        # 상위 마스터 윈도우(유저 창)와 안전 포인터 매칭
         self.window = ctk.CTkToplevel(self.main_gui.root)
+        self.event_queue = queue.Queue()
+        self.window.after(50, self.process_queue)
+
+        # 웹소켓 메시지를 큐에 담아 처리하도록 리스너 시작
+        self.api.start_websocket_listener(self.handle_ws_message)
+    
         self.window.title("관리자 실시간 통합 모니터링 시스템 v1.2")
         
         # 윈도우 레이어 포커스 우선순위 설정
@@ -36,6 +44,23 @@ class ManagerGUI:
         self.window.after(60, lambda: self.show_tab("진행 상태 모니터링"))
         
         self.save_error_log("관리자 실시간 제어 콘솔 가동 완료")
+
+    # ===========================================================================
+    # [SECTION 2] 이벤트 / 웹소켓 처리 
+    # ===========================================================================
+    def handle_ws_message(self, data):
+        self.event_queue.put(data)
+
+    def process_queue(self):
+        try:
+            while not self.event_queue.empty():
+                data = self.event_queue.get_nowait()
+                if data.get("type") == "PROCESS_STATE":
+                    new_status = data.get("payload")
+                    self.update_user_status(new_status) # 서버가 시키는 대로만 상태 변경
+        except Exception as e:
+            print(f"Queue error: {e}")
+        self.window.after(50, self.process_queue)
 
     def _setup_window_geometry(self):
         """화면 해상도 분석 및 관리자 창 위치 우측 최적화 배치"""
@@ -73,9 +98,8 @@ class ManagerGUI:
         self.main_content_area = ctk.CTkFrame(self.window, fg_color="transparent")
         self.main_content_area.pack(side="right", fill="both", expand=True)
 
-
     # =========================================================================
-    # [SECTION 2] 내비게이션 및 라우팅 컨트롤 (Navigation & Tab Routing)
+    # [SECTION 3] 화면 라우팅 컨트롤
     # =========================================================================
     def build_sidebar_menu(self):
         """좌측 제어 대시보드 메뉴 버튼 빌드"""
@@ -134,7 +158,7 @@ class ManagerGUI:
 
 
     # =========================================================================
-    # [SECTION 3] 독립 UI 뷰 렌더러 (UI View Screen Renderers)
+    # [SECTION 4] 독립 UI 뷰 렌더, 화면 
     # =========================================================================
     def view_progress_monitoring(self):
         """TAB 1: 로봇 공정 실시간 진행 대시보드"""
@@ -261,6 +285,9 @@ class ManagerGUI:
         # 액추에이터 및 원점 복구 하단 패널 프레임 구성
         self._render_hardware_tool_zone(scroll_frame)
 
+    # ========================================================================
+    # [SECTION 5] UI 컴포넌트 및 하드웨어 제어 로직
+    # ========================================================================
     def _render_hardware_tool_zone(self, parent_frame):
         """수동 제어 하단 액추에이터 제어 공통 버튼 콤포넌트 렌더러"""
         tool_frame = ctk.CTkFrame(parent_frame, fg_color="#20242f", corner_radius=10, border_width=1, border_color="#3e475e")
@@ -289,9 +316,8 @@ class ManagerGUI:
         self.log_textbox.pack(fill="both", expand=True, padx=20, pady=20)
         self.refresh_log_display()
 
-
     # =========================================================================
-    # [SECTION 4] 하드웨어 통신 및 동기화 로직 (Hardware Sync & Logic)
+    # [SECTION 6] 하드웨어 통신 및 동기화 로직
     # =========================================================================
     def update_user_status(self, status_text):
         """메인 유저 터미널의 공정 문맥 동기화 및 가시 테마 변환"""
@@ -305,8 +331,11 @@ class ManagerGUI:
                 self.lbl_monitor_status.configure(text=status_text, text_color="#00fa9a")
 
     def execute_remote_emergency_stop(self):
-        """비상정지 버튼 수동 입력 패킷 강제 주입 함수"""
-        self.save_error_log("[MANUAL_OVERRIDE] 관리자에 의한 원격 긴급 비상 정지 가동")
+        """[수정] 관리자 비상 정지 시 백엔드에 즉시 통보"""
+        self.save_error_log("[MANUAL_OVERRIDE] 관리자 비상 정지")
+
+        self.api.send_emergency_stop(task_id=getattr(self.main_gui, 'current_task_id', None))
+        # 2. 로컬 UI 제어
         if self.main_gui:
             self.main_gui.emergency_stop = True
             self.main_gui.is_running = False
@@ -334,19 +363,28 @@ class ManagerGUI:
         self.save_error_log("[RECOVERY_ACTION] 원상 복귀(Home Position 0.0°) 리셋 구동 패킷 전송")
         CTkMessagebox(title="시스템 원상복구 완료", message="✅ 현장 조치 후 로봇의 전체 6축 관절을 초기 원상태(Home Position)로 안전하게 복귀시켰습니다.", icon="check", corner_radius=12, width=480)
 
+    # ===========================================================================
+    # [SECTION 7] 하드웨어 제어 명령 송신
+    # ===========================================================================
     def send_all_joints_command(self):
-        """현재 세팅된 6축 아날로그 자이로 좌표 일괄 전송 (MoveJ)"""
-        joint_angles = {}
-        log_msg = "M0609 MoveJ Command Send -> "
-        for name, slider in self.joint_sliders.items():
-            if slider.winfo_exists():
-                angle = round(slider.get(), 1)
-                joint_angles[name.split(" ")[0]] = angle
-                log_msg += f"{name.split(' ')[0]}: {angle}°  "
+        # 1. 데이터 준비
+        joint_angles = {k.split(" ")[0]: round(s.get(), 1) for k, s in self.joint_sliders.items()}
+        
+        # 2. 서버 전송
+        response = self.api.send_hardware_command(joint_angles)
+        
+        # 3. 서버 응답 확인 (응답이 없거나 200이 아니면 여기서 중단)
+        if response is None or response.status_code != 200:
+            CTkMessagebox(title="통신 오류", message="백엔드 서버와 연결할 수 없습니다.", icon="cancel")
+            return
 
-        self.save_error_log(f"[MANUAL] {log_msg}")
-        cmd_summary = "\n".join([f"• {k} 관절 주입 좌표 : {v}°" for k, v in joint_angles.items()])
-        CTkMessagebox(title="M0609 제어 전송 완료", message=f"두산 협동로봇 제어 모듈에 다음 관절 자이로 좌표를 가동 명령 데이터로 연동했습니다.\n\n{cmd_summary}", icon="check", corner_radius=12)
+        # 4. 서버에 task_start 요청
+        res = self.api.request_task_start(mode_id=1)
+        
+        # 5. UI 업데이트는 직접 하지 말고 서버 피드백을 기다림
+        # self.status(X) -> self.lbl_monitor_status(O)
+        if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
+            self.lbl_monitor_status.configure(text="서버 응답 대기 중...", text_color="#f1c40f")
 
     def control_hardware_action(self, action_name):
         """엔드이펙터(그리퍼 등) 수동 액추에이터 제어 유닛 트랙 신호 송신"""
@@ -370,11 +408,12 @@ class ManagerGUI:
                 entry_widget.delete(0, "end"); entry_widget.insert(0, f"{slider_widget.get():.1f}")
 
     # =========================================================================
-    # [SECTION 5] 파일 입출력 및 코어 데이터 락 복구 (Disk I/O & Core Recovery)
+    # [SECTION 8] 비상 제어 / 복구 로직
     # =========================================================================
     def execute_system_recovery(self):
-        """관리자 복구 스케줄러 락 해제 트리거"""
-        self.save_error_log("[SYSTEM] 관리자 복구 승인 및 인터록 해제 시도")
+        """[수정] 시스템 복구 신호를 백엔드로 전달"""
+        self.save_error_log("[SYSTEM] 복구 승인")
+        self.api.reset_robot_system()
         # 튕김 방지를 위해 즉시 창을 조작하지 못하도록 버튼이나 화면 처리를 유예
         self.window.after(100, self._safe_execute_recovery)
 
@@ -415,6 +454,9 @@ class ManagerGUI:
         except Exception as e:
             self.save_error_log(f"[RECOVERY_ERROR] 복구 프로세스 중 예외 발생: {str(e)}")
 
+    # ========================================================================
+    # [SECTION 9] 로컬 파일 I/O 및 로그 관리
+    # ========================================================================
     def load_cycle_count(self):
         """누적 가동 공정 횟수 카운터 디스크 I/O 트랙"""
         if os.path.exists(self.cycle_count_file):

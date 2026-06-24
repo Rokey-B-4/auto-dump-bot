@@ -2,17 +2,28 @@ import customtkinter as ctk
 from CTkMessagebox import CTkMessagebox
 import threading
 import time
+import requests
+import queue
 
 # 관리자 콘솔 클래스 임포트
 from manager import ManagerGUI
+from api_service import APIService
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-
 class FoodWasteGUI:
+    # ========================================================
+    # 1. 초기화 / 설정 
+    # ========================================================
     def __init__(self):
         self.root = ctk.CTk()
+        self.api_service = APIService() # API 서비스 초기화
+        self.event_queue = queue.Queue()
+        self.api_service.start_websocket_listener(self.handle_ws_message)
+
+        self.current_task_id = None     # 서버에서 받은 Task ID 저장용
+
         self.root.geometry("1050x700")
         self.root.title("음식물 스마트 처리 시스템 (Auto Dump Bot)")
         self.root.configure(fg_color="#20242f")
@@ -39,11 +50,58 @@ class FoodWasteGUI:
         
         # 관리자 윈도우 포커싱 최적화 후 루프 진입
         self.root.after(100, lambda: self.manager_console.window.lift())
+        self.root.after(50, self.process_queue)
         self.root.mainloop()
 
-    # ─────────────────────────────────────────────────────────────────
-    # 코어 유틸리티 및 안전 매커니즘 시스템
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
+    # 2. 큐 기반 이벤트 처리 시스템
+    # ========================================================
+    def process_queue(self):
+        try:
+            while not self.event_queue.empty():
+                data = self.event_queue.get_nowait()
+                msg_type = data.get("type")
+                payload = data.get("payload")
+
+                if msg_type == "PROCESS_STATE":
+                    # 서버가 보내준 단계 이름이 들어오면 UI 업데이트
+                    if hasattr(self, "status") and self.status.winfo_exists():
+                        self.status.configure(text=payload)
+                        # 서버가 특정 단계 이름을 보내면 그에 맞춰 진행률도 업데이트
+                        self.update_step_ui_by_server(payload)
+
+                elif msg_type == "SAFETY_EVENT":
+                    if payload == "EMERGENCY_STOP":
+                        self.trigger_drop_error()
+                    
+        except Exception as e:
+            print(f"Queue Processing Error: {e}")
+        self.root.after(50, self.process_queue)
+
+    # 서버 메시지에 따라 단계 UI를 업데이트하는 함수 추가
+    def update_step_ui_by_server(self, current_step_name):
+        # self.steps = ["통 파지", "배출 위치 이동", ... ] 리스트 활용
+        try:
+            idx = self.steps.index(current_step_name)
+            progress = (idx + 1) / len(self.steps)
+            self.update_ui(idx, current_step_name, progress)
+        except ValueError:
+            pass # 정의되지 않은 단계면 무시
+
+    def handle_ws_message(self, data):
+        """웹소켓 스레드에서 호출됨: 데이터를 큐에 넣고 즉시 종료"""
+        self.event_queue.put(data)
+
+    def _real_ui_update(self, data):
+        """여기서 안전하게 UI 조작"""
+        # (예시)
+        msg_type = data.get("type")
+        if msg_type == "PROCESS_STATE":
+            if hasattr(self, "status_label") and self.status_label.winfo_exists():
+                self.status_label.configure(text=data.get("payload"))
+    # ========================================================
+    # 3. 코어 유틸리티 및 안전 매커니즘 시스템
+    # ========================================================
     def clear_root(self):
         """현재 메인 컨테이너 내부의 모든 유저 인터페이스 위젯 제거"""
         for after_id in self._active_after_ids:
@@ -64,9 +122,10 @@ class FoodWasteGUI:
         self._active_after_ids.append(after_id)
         return after_id
 
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
+    # 4. 화면 뷰 생성 및 공정 시퀀스 UI 시스템
     # VIEW 01: 인트로 시작 화면 (Intro UI)
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
     def create_intro_ui(self):
         self.clear_root()
         
@@ -92,9 +151,9 @@ class FoodWasteGUI:
         )
         start_btn.pack()
 
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
     # VIEW 02: 작업 유형 선택 화면 (Mode Selection UI)
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
     def create_mode_selection_ui(self):
         self.clear_root()
         
@@ -147,9 +206,9 @@ class FoodWasteGUI:
         self.selected_mode = mode
         self.create_placement_guide_ui()
 
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
     # VIEW 03: 하드웨어 수거통 배치 가이드 화면 (Placement Guide UI)
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
     def create_placement_guide_ui(self):
         self.clear_root()
         
@@ -208,9 +267,9 @@ class FoodWasteGUI:
         )
         CTkMessagebox(title="⚠️ 수거통 배치 오류 안내", message=error_message, icon="warning", option_1="확인", corner_radius=12, width=500)
 
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
     # VIEW 04: 실시간 공정 진행 화면 (Process Monitoring UI)
-    # ─────────────────────────────────────────────────────────────────
+    # =======================================================
     def create_process_ui(self):
         self.clear_root()
         self.step_labels = []
@@ -304,22 +363,21 @@ class FoodWasteGUI:
         # 자동 공정 프로세스 스레드 기동
         self.start(self.selected_mode)
 
-    # ─────────────────────────────────────────────────────────────────
-    # 비동기 로봇 공정 스레딩 컨트롤 타워
-    # ─────────────────────────────────────────────────────────────────
+    # =======================================================
+    # 5. 프로세스 제어 
+    # ========================================================
     def start(self, mode):
         if self.is_running:
             return
         self.is_running = True
-        self.emergency_stop = False
-        self.progress.set(0)
+        response = self.api_service.request_task_start(mode)
         
-        if self.manager_console:
-            self.manager_console.update_user_status("이용 중 (공정 가동 중)")
-
-        thread = threading.Thread(target=self.run_process, args=(mode,))
-        thread.daemon = True
-        thread.start()
+        if response and "task_id" in response:
+            self.current_task_id = response["task_id"]
+            # run_process 스레드 실행 코드 삭제 (필요 없음!)
+        else:
+            self.is_running = False
+            CTkMessagebox(title="통신 오류", message="서버에서 응답이 없습니다.")
 
     def run_process(self, mode):
         total = len(self.steps)
@@ -364,17 +422,21 @@ class FoodWasteGUI:
         if self.home_btn.winfo_exists():
             self.home_btn.pack()
 
-    # ─────────────────────────────────────────────────────────────────
-    # EMERGENCY LOCK SCREEN SYSTEM (비상 정지 전체 오버레이)
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
+    # 6. EMERGENCY LOCK SCREEN SYSTEM (비상 정지 전체 오버레이)
+    # ========================================================
     def trigger_drop_error(self):
         """센서 단락 혹은 관리자 콘솔 긴급 중단 명령 패킷 수신 시 호출"""
         self.emergency_stop = True
         self.is_running = False
         
+        if self.current_task_id:
+            self.api_service.send_error_log(self.current_task_id, "DROP001", "수거통 탈락 감지")
+
         if self.manager_console:
             self.manager_console.update_user_status("❌ 원격 강제 중단됨 (인터록 가동)")
             
+        self.emergency_stop = True    
         self.show_fatal_error_screen()
 
     def show_fatal_error_screen(self):
@@ -424,9 +486,9 @@ class FoodWasteGUI:
         )
         lbl_status.pack(side="bottom", pady=25)
 
-    # ─────────────────────────────────────────────────────────────────
-    # RECOVERY SYSTEM (관리자 콘솔 원격 복구 초기화 커넥터)
-    # ─────────────────────────────────────────────────────────────────
+    # ========================================================
+    # 7. RECOVERY SYSTEM (관리자 콘솔 원격 복구 초기화 커넥터)
+    # ========================================================
     def reset_system(self):
         """관리자가 인터록 복구 승인 시 호출되는 1차 세이프 리셋 진입점"""
         self.emergency_stop = True  
