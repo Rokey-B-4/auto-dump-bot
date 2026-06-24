@@ -2,7 +2,9 @@ import customtkinter as ctk
 from CTkMessagebox import CTkMessagebox
 from datetime import datetime
 import os
-from api_service import APIService
+
+import requests
+from api_manager import AdminAPI
 import queue
 
 
@@ -14,7 +16,7 @@ class ManagerGUI:
         """관리자 모니터링 콘솔 메인 초기화"""
         self.reset_callback = reset_callback
         self.main_gui = main_gui_instance
-        self.api = APIService() # API 통신 인스턴스
+        self.api = AdminAPI() # API 통신 인스턴스
 
         self.window = ctk.CTkToplevel(self.main_gui.root)
         self.event_queue = queue.Queue()
@@ -353,16 +355,57 @@ class ManagerGUI:
         self.window.focus_force()
 
     def reset_all_joints(self):
-        """협동로봇 전체 6축 서보 원점 초기 마진 회귀"""
-        for name, slider in self.joint_sliders.items():
-            if slider.winfo_exists(): slider.set(0.0)
-        for name, entry in self.joint_entries.items():
-            if entry.winfo_exists():
-                entry.delete(0, "end"); entry.insert(0, "0.0")
-                
-        self.save_error_log("[RECOVERY_ACTION] 원상 복귀(Home Position 0.0°) 리셋 구동 패킷 전송")
-        CTkMessagebox(title="시스템 원상복구 완료", message="✅ 현장 조치 후 로봇의 전체 6축 관절을 초기 원상태(Home Position)로 안전하게 복귀시켰습니다.", icon="check", corner_radius=12, width=480)
+        """협동로봇 Home 위치 복귀"""
+        try:
+            # Home 위치 데이터 (기존 로봇 위치와 상관 없는지 확인 필요)
+            joint_angles = {
+                "J1": 0.0,
+                "J2": 0.0,
+                "J3": 0.0,
+                "J4": 0.0,
+                "J5": 0.0,
+                "J6": 0.0
+            }
+            # 서버 전송
+            response = self.api.send_hardware_command(joint_angles)
+            # 서버 응답 확인
+            # 통신 실패
+            if response is None:
+                raise Exception(
+                    "백엔드 서버와 연결할 수 없습니다."
+                )
+            # 서버 에러
+            if not response.ok:
+                raise Exception(
+                    f"서버 응답 오류 : {response.status_code}"
+                )
+            
+            # 서버 성공했을 때만 UI 갱신
+            for name, slider in self.joint_sliders.items():
+                if slider.winfo_exists():
+                    slider.set(0.0)
 
+            for name, entry in self.joint_entries.items():
+                if entry.winfo_exists():
+                    entry.delete(0,"end")
+                    entry.insert(0,"0.0")
+
+            self.save_error_log("[RECOVERY_ACTION] Home Position 이동 성공")
+            CTkMessagebox(
+                title="원상복구 완료",
+                message="✅ 로봇이 Home 위치로 복귀했습니다.",
+                icon="check",
+                corner_radius=12
+            )
+
+        except Exception as e:
+            self.save_error_log(f"[ERROR] {str(e)}")
+            CTkMessagebox(
+                title="원상복구 실패",
+                message=f"❌ {str(e)}",
+                icon="cancel",
+                corner_radius=12
+            )
     # ===========================================================================
     # [SECTION 7] 하드웨어 제어 명령 송신
     # ===========================================================================
@@ -373,9 +416,13 @@ class ManagerGUI:
         # 2. 서버 전송
         response = self.api.send_hardware_command(joint_angles)
         
-        # 3. 서버 응답 확인 (응답이 없거나 200이 아니면 여기서 중단)
-        if response is None or response.status_code != 200:
-            CTkMessagebox(title="통신 오류", message="백엔드 서버와 연결할 수 없습니다.", icon="cancel")
+        # 3. 서버 응답 확인 
+        if response is None or not response.ok:
+            CTkMessagebox(
+                title="통신 오류",
+                message="❌ 백엔드 서버와 연결할 수 없습니다.",
+                icon="cancel"
+            )
             return
 
         # 4. 서버에 task_start 요청
@@ -387,10 +434,58 @@ class ManagerGUI:
             self.lbl_monitor_status.configure(text="서버 응답 대기 중...", text_color="#f1c40f")
 
     def control_hardware_action(self, action_name):
-        """엔드이펙터(그리퍼 등) 수동 액추에이터 제어 유닛 트랙 신호 송신"""
-        base_angle = round(self.joint_sliders["J1 (Base)"].get(), 1) if "J1 (Base)" in self.joint_sliders else 0.0
-        self.save_error_log(f"[MANUAL] 엔드이펙터 수동 제어 패킷 전송: {action_name} (Base: {base_angle}°)")
-        CTkMessagebox(title="수동 제어 성공", message=f"✅ {action_name} 엑추에이터 파지 명령을 전달했습니다.", icon="check", corner_radius=12)
+        base_angle = round(
+            self.joint_sliders["J1 (Base)"].get(),1
+        ) if "J1 (Base)" in self.joint_sliders else 0.0
+
+        try:
+            payload={
+                "action":action_name,
+                "base_angle":base_angle
+            }
+            response=requests.post(
+                "http://localhost:8000/api/hardware/control",
+                json=payload,
+                timeout=3
+            )
+            if response.status_code!=200:
+                raise Exception(
+                    f"서버 응답 오류 : {response.status_code}"
+                )
+
+            result=response.json()
+
+            self.save_error_log(f"[MANUAL] 제어 성공: {action_name}")
+
+            CTkMessagebox(
+                title="수동 제어 성공",
+                message=f"✅ {action_name} 명령 전달 완료",
+                icon="check",
+                corner_radius=12
+            )
+
+        except requests.ConnectionError:
+
+            self.save_error_log(
+                "[ERROR] 백엔드 연결 실패"
+            )
+            CTkMessagebox(
+                title="연결 실패",
+                message="❌ 백엔드 서버와 연결되어 있지 않습니다.",
+                icon="cancel",
+                corner_radius=12
+            )
+
+        except Exception as e:
+            self.save_error_log(
+                f"[ERROR] {str(e)}"
+            )
+            CTkMessagebox(
+                title="명령 실패",
+                message=f"❌ {str(e)}",
+                icon="cancel",
+                corner_radius=12
+            )
 
     def _sync_slider_to_entry(self, value, entry_widget):
         if entry_widget.winfo_exists():
@@ -411,12 +506,35 @@ class ManagerGUI:
     # [SECTION 8] 비상 제어 / 복구 로직
     # =========================================================================
     def execute_system_recovery(self):
-        """[수정] 시스템 복구 신호를 백엔드로 전달"""
-        self.save_error_log("[SYSTEM] 복구 승인")
-        self.api.reset_robot_system()
-        # 튕김 방지를 위해 즉시 창을 조작하지 못하도록 버튼이나 화면 처리를 유예
-        self.window.after(100, self._safe_execute_recovery)
+        """시스템 복구 요청"""
+        try:
+            self.save_error_log("[SYSTEM] 복구 승인")
+            response = self.api.reset_robot_system()
+            if response is None or response.status_code != 200:
+                raise Exception("백엔드 서버 연결 실패")
+            # 서버 성공 시에만 복구 UI 실행
+            self.window.after(
+                100,
+                self._safe_execute_recovery
+            )
 
+        except requests.ConnectionError:
+            self.save_error_log("[ERROR] 백엔드 연결 실패")
+            CTkMessagebox(
+                title="연결 실패",
+                message="❌ 백엔드 서버와 연결되어 있지 않습니다.",
+                icon="cancel"
+            )
+        except Exception as e:
+            self.save_error_log(
+                f"[ERROR] {str(e)}"
+            )
+            CTkMessagebox(
+                title="복구 실패",
+                message=f"❌ {str(e)}",
+                icon="cancel"
+            )
+            
     def _safe_execute_recovery(self):
         """🚨 [CRITICAL PATCH] Segmentation Fault (코어 덤프) 원천 차단 복구 엔진"""
         try:
