@@ -10,6 +10,7 @@
   아래 좌표는 반드시 실제 지그/수거통/세척 위치에 맞게 교시 후 수정해야 한다.
 """
 
+import json
 import math
 import time
 from enum import Enum
@@ -17,7 +18,6 @@ from enum import Enum
 import rclpy
 import DR_init
 from std_msgs.msg import String, Bool, Int32
-from std_srvs.srv import Trigger
 from dsr_msgs2.srv import MoveStop
 from onrobot_rg_msgs.srv import SetCommand
 
@@ -33,6 +33,14 @@ DR_init.__dsr__model = ROBOT_MODEL
 VELOCITYX, ACCX = 30, 30
 VELOCITYJ, ACCJ = 30, 30
 SLOW_VELX, SLOW_ACCX = 20, 20
+
+# 실제 장착 공구/TCP 설정
+TOOL_NAME = "Tool Weight_2FG"
+TOOL_WEIGHT_KG = 0.908
+TOOL_CENTER_OF_GRAVITY_MM = None  # TODO: [x, y, z] 실측 후 입력
+TOOL_INERTIA = None               # TODO: [Ixx, Iyy, Izz, Ixy, Ixz, Iyz] 입력
+TCP_NAME = "2FG_TCP"
+TCP_OFFSET = [0.0, 0.0, 228.0, 0.0, 0.0, 0.0]
 
 # 주기 털기 반복 횟수
 SHAKE_REPEAT_COUNT = 3
@@ -52,15 +60,15 @@ GRIPPER_INPUT_IDX = 1         # 실제 파지 확인용 Tool DI 번호. 현장 �
 
 # 외력제어 파라미터
 FORCE_TH = 20.0  # place시 외력감지 Threshold
-DESIRED_FORCE_X = 45.0     # 세척 위치 안착 방향 힘[N] - 베이스 좌표계 +X 방향
+DESIRED_FORCE_X = 65.0     # 세척 위치 안착 방향 힘[N] - 베이스 좌표계 +X 방향
 DESIRED_FORCE_Z = 10.0     # 세척 위치 Z방향 힘[N] - 실기 테스트 후 조정
 COMPLIANCE_X = 300         # X 순응 강성 - 낮을수록 +X 방향 접촉면을 부드럽게 따라감
 COMPLIANCE_Y = 3000        # Y 순응 강성 - Y방향의 불필요한 움직임을 억제
 COMPLIANCE_Z = 3000        # Z 순응 강성 - 낮을수록 부드럽게 눌림
 FORCE_CONTROL_TIME = 10.0   # 목표 외력을 유지하며 안착시킬 시간[s]
 
-# 밸브 - 굳이 필요는 없을 듯
-VALVE_DO_IDX = 1              # 수도 밸브 제어용 Digital Output 번호. 현장 배선에 맞게 수정
+# # 밸브 - 굳이 필요는 없을 듯
+# VALVE_DO_IDX = 1              # 수도 밸브 제어용 Digital Output 번호. 현장 배선에 맞게 수정
 
 # 배출 모드: 1=일반 배출, 2=강하게 털기
 DUMP_MODE_NORMAL = 1
@@ -102,31 +110,33 @@ class ErrorCode(str, Enum):
 def coordinates():
     """실기기에서 측정한 좌표 묶음."""
     return {
-        # 수거통 픽업 위치
-        "bin_approach": posx(457.76, -244.42, 59.15, 92.33, 86.93, -86.84),
-        "bin_pick": posx(466.08, -202.23, 66.98, 95.02, 88.55, -85.96),
-        "bin_pick_top": posx(466.04, -196.34, 199.37, 92.36, 90.60, -89.12),
-
-        # 음식물 배출 위치
-        "dump_approach": posx(466.08, -4.19, 199.37, 90.27, 92.28, -87.35),
-        "dump_tilt": posj(-15.97, 35.06, 102.51, 76.35, 99.09, -80.00),
-
+        # 초기 대기 및 종료 위치
+        "home": posj(0, 0, 90, 0, 90, 0),
+        
         # 배출 위치에서 세척 위치로 이동할 때의 경유점
-        "way_point": posx(311.45, -272.72, 129.42, 57.31, 88.51, -85.82),
+        "way_point_j": posj(-76.27, 47.33, 97.16, 65.18, 105.46, -56.09),
+
+        # 수거통 픽업 위치
+        "bin_approach": posj(-43.93, 60.63, 77.03, 55.39, 117.12, -56.03),
+
+        # 상대좌표: 직전 위치 기준, 로봇 베이스(조인트) 좌표계
+        "bin_pick": posx(0, 0, 95, 0, 0, 0),
+        "bin_pick_top": posx(0, 130, 0, 0, 0, 0),
+        "dump_approach": posx(0, 0, 180, 0, 0, 0),
+        "dump_tilt": posx(0, 0, 0, 160, 0, 0),
 
         # 세척 위치
-        "wash_approach": posx(454.14, 17.88, 112.29, 0.72, 93.48, -87.55),
-        "wash_place": posx(482.61, 17.07, 112.91, 0.82, 93.14, -87.60),
-        "wash_close": posx(685.11, -87.56, 361.56, 84.15, 134.72, -92.30),
-        "wash_open": posj(-14.96, 55.93, 21.05, 46.65, 105.56, -99.25),
-        "wash_pick": posx(484.18, 8.30, 91.97, 2.53, 93.50, -88.50),
-
+        "wash_approach_x": posx(672.14, 17.01, 87.32, 0.88, 90.95, 90.88),
+        "wash_app_x": posx(699.77, 71.62, 194.76, 82.66, 129.73, 35.61),
+        "wash_place": posx(0, 0, 40, 0, 0, 0),
+        "wash_close": posx(0, 0, 0, 140, 0, 0),
+        "wash_open": posx(0, 0, 0, -140, 0, 0),
+        "wash_pick": posx(0, -15, 40, 0, 0, 0),
+        "wash_up": posx(0, 15, 0, 0, 0, 0),
+        
         # 세척수 배출 위치
-        "water_out_approach": posx(557.53, -170.89, 145.02, 90.10, 94.08, -91.72),
-        "water_out_tilt": posj(-28.34, 54.57, 71.90, 68.79, 109.80, -90.00),
-
-        # 초기 대기 및 종료 위치
-        "home": posj(-0.45, 0.66, 88.77, -0.77, 87.93, -234.35),
+        "water_out_approach": posx(560.48, 49.57, 135.13, 91.02, 89.43, 90.79),
+        "water_out_tilt": posx(0, 0, 0, 140, 0, 0),
     }
 
 
@@ -149,6 +159,10 @@ def init_robot_api():
     required_services = [
         _ds._ros2_set_current_tool,
         _ds._ros2_set_current_tcp,
+        _ds._ros2_config_create_tool,
+        _ds._ros2_config_create_tcp,
+        _ds._ros2_get_current_tool,
+        _ds._ros2_get_current_tcp,
         _ds._ros2_set_singularity_handling,
         _ds._ros2_movej,
         _ds._ros2_movel,
@@ -178,13 +192,25 @@ def init_robot_api():
     operation_mode = g_node.declare_parameter(
         "operation_mode", "virtual"
     ).get_parameter_value().string_value
-    # 실제모드면 set_tool, set_tcp 값 확인
+    # 실제모드에서는 교시 좌표와 동일한 공구/TCP를 반드시 선택한다.
     if operation_mode == "real":
-        # set_tool과 set_tcp는 리턴값이 0이어야 성공으로 인식
-        if _ds.set_tool("Tool Weight_2FG") != 0:
-            raise RuntimeError("Tool Weight_2FG is not registered on the real robot")
-        if _ds.set_tcp("2FG_TCP") != 0:
-            raise RuntimeError("2FG_TCP is not registered on the real robot")
+        if _ds.set_tcp(TCP_NAME) != 0:
+            if _ds.add_tcp(TCP_NAME, TCP_OFFSET) != 0 or _ds.set_tcp(TCP_NAME) != 0:
+                raise RuntimeError(f"TCP 등록/선택 실패: {TCP_NAME}")
+
+        if _ds.set_tool(TOOL_NAME) != 0:
+            if TOOL_CENTER_OF_GRAVITY_MM is None or TOOL_INERTIA is None:
+                raise RuntimeError(
+                    f"공구 '{TOOL_NAME}'가 미등록 상태입니다. "
+                    "TOOL_CENTER_OF_GRAVITY_MM과 TOOL_INERTIA를 입력해 주세요."
+                )
+            if (
+                _ds.add_tool(TOOL_NAME, TOOL_WEIGHT_KG, TOOL_CENTER_OF_GRAVITY_MM, TOOL_INERTIA) != 0
+                or _ds.set_tool(TOOL_NAME) != 0
+            ):
+                raise RuntimeError(f"공구 등록/선택 실패: {TOOL_NAME}")
+
+        g_node.get_logger().info(f"Tool/TCP selected: {_ds.get_tool()} / {_ds.get_tcp()}")
     
     # 가상모드면 set_tool, set_tcp 값 확인 넘어감
     elif operation_mode == "virtual":
@@ -317,12 +343,12 @@ def is_grasped() -> bool:
         return False
 
 
-def valve_open():
-    _ds.set_digital_output(VALVE_DO_IDX, _ds.ON)
+# def valve_open():
+#     _ds.set_digital_output(VALVE_DO_IDX, _ds.ON)
 
 
-def valve_close():
-    _ds.set_digital_output(VALVE_DO_IDX, _ds.OFF)
+# def valve_close():
+#     _ds.set_digital_output(VALVE_DO_IDX, _ds.OFF)
 
 
 # ==============================================================================
@@ -337,11 +363,11 @@ def raise_safety_stop(code: ErrorCode, msg: str):
     stop(_ds.DR_QSTOP)
     status.set_state(ProcessState.COLLISION if code == ErrorCode.ERR_COLLISION else ProcessState.ERROR)
     status.publish_safety(code, msg)
-    try:
-        valve_close()
-    except Exception:
-        pass
-    raise RuntimeError(f"{code.value}: {msg}")
+    # try:
+    #     valve_close()
+    # except Exception:
+    #     pass
+    # raise RuntimeError(f"{code.value}: {msg}")
 
 
 def safety_watch(require_grasp: bool = False):
@@ -358,11 +384,19 @@ def safe_movej(target, vel=VELOCITYJ, acc=ACCJ, require_grasp=False):
         _ds.wait(0.05)
 
 
-def safe_movel(target, vel=VELOCITYX, acc=ACCX, require_grasp=False):
-    _ds.amovel(target, vel=vel, acc=acc)
+def safe_movel(target, vel=VELOCITYX, acc=ACCX, require_grasp=False, ref=None, mod=None):
+    ref = _ds.DR_BASE if ref is None else ref
+    mod = _ds.DR_MV_MOD_ABS if mod is None else mod
+    _ds.amovel(target, vel=vel, acc=acc, ref=ref, mod=mod)
     while _ds.check_motion():
         safety_watch(require_grasp=require_grasp)
         _ds.wait(0.05)
+
+
+def safe_movel_relative(target, require_grasp=False, vel=SLOW_VELX, acc=SLOW_ACCX):
+    """직전 TCP 자세에서 베이스(조인트 기준) 좌표계로 상대 직선 이동한다."""
+    safe_movel(target, vel=vel, acc=acc, require_grasp=require_grasp,
+               ref=_ds.DR_BASE, mod=_ds.DR_MV_MOD_REL)
 
 
 def safe_move_periodic(amp, period, atime, repeat, ref, require_grasp=False):
@@ -443,11 +477,9 @@ def pick_bin():
     status.set_state(ProcessState.MOVING, "수거통 위치 이동 및 파지")
     coords = coordinates()
 
-    # bin approach 위치로 이동
-    safe_movel(coords["bin_pick_top"])
-    safe_movel(coords["bin_approach"])
-    # bin_pick 위치로 이동
-    safe_movel(coords["bin_pick"], vel=SLOW_VELX, acc=SLOW_ACCX)
+    safe_movej(coords["way_point_j"])
+    safe_movej(coords["bin_approach"])
+    safe_movel_relative(coords["bin_pick"])
 
     gripper_close()
     safe_wait(0.8)
@@ -457,7 +489,7 @@ def pick_bin():
         gripper_open()
         raise RuntimeError("수거통의 위치를 확인해 주세요")
 
-    safe_movel(coords["bin_pick_top"], require_grasp=True)
+    safe_movel_relative(coords["bin_pick_top"], require_grasp=True)
 
 # 음식물 쓰레기 폐기통에 버리는 모션
 # 주기적 shake 모션 함수
@@ -493,13 +525,10 @@ def run_dump_motion(mode: int):
     if mode not in (DUMP_MODE_NORMAL, DUMP_MODE_STRONG):
         raise ValueError("dump mode must be 1(normal) or 2(strong)")
 
-    safe_movel(coords["dump_approach"], require_grasp=True)
-    safe_movej(coords["dump_tilt"], vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
+    safe_movel_relative(coords["dump_approach"], require_grasp=True)
+    safe_movel_relative(coords["dump_tilt"], require_grasp=True)
 
     run_periodic_dump_shake(mode)
-
-    safe_movel(coords["dump_approach"], require_grasp=True)
-
 
 def run_periodic_water_shake():
     """water_out_tilt 자세를 중심으로 Tool X축 주기 운동을 수행한다."""
@@ -521,26 +550,25 @@ def execute_wash():
     status.set_state(ProcessState.WASHING, "세척 위치 이동")
     coords = coordinates()
 
-    safe_movel(coords["way_point"], require_grasp=True)
-    safe_movel(coords["wash_approach"], require_grasp=True)
-    safe_movel(coords["wash_place"], require_grasp=True)
+    safe_movej(coords["way_point_j"], require_grasp=True)
+    safe_movel(coords["wash_approach_x"], require_grasp=True)
+    safe_movel_relative(coords["wash_place"], require_grasp=True)
     apply_wash_place_force()
 
     # 세척 위치에 수거통을 내려놓고 수도 레버를 조작한다.
     gripper_open()
-    safe_movel(coords["wash_approach"])
-    safe_movel(coords["way_point"])
-    safe_movel(coords["wash_close"])
+    safe_movel(coords["wash_approach_x"])
+    safe_movej(coords["way_point_j"])
+    safe_movel(coords["wash_app_x"])
     gripper_close()
-    safe_movej(coords["wash_open"], vel=SLOW_VELX, acc=SLOW_ACCX)
-    _ds.wait(1.5)
-    safe_movel(coords["wash_close"])
+    safe_movel_relative(coords["wash_close"])
+    safe_movel_relative(coords["wash_open"])
     gripper_open()
 
     # 세척이 끝난 수거통을 다시 파지한다.
-    safe_movel(coords["way_point"])
-    safe_movel(coords["wash_approach"])
-    safe_movel(coords["wash_pick"], vel=SLOW_VELX, acc=SLOW_ACCX)
+    safe_movej(coords["way_point_j"])
+    safe_movel(coords["wash_approach_x"])
+    safe_movel_relative(coords["wash_pick"])
     gripper_close()
     safe_wait(0.8)
 
@@ -549,12 +577,13 @@ def execute_wash():
         gripper_open()
         raise RuntimeError("세척 후 수거통의 위치를 확인해 주세요")
 
-    safe_movel(coords["wash_approach"], require_grasp=True)
-    safe_movel(coords["way_point"], require_grasp=True)
+    safe_movel_relative(coords["wash_up"], require_grasp=True)
+    safe_movel(coords["wash_approach_x"], require_grasp=True)
+    safe_movej(coords["way_point_j"], require_grasp=True)
 
     # 오수 배출: 교시된 배출/기울임/흔들기 좌표를 순서대로 사용한다.
     safe_movel(coords["water_out_approach"], require_grasp=True)
-    safe_movej(coords["water_out_tilt"], vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
+    safe_movel_relative(coords["water_out_tilt"], require_grasp=True)
 
     run_periodic_water_shake()
 
@@ -566,16 +595,11 @@ def return_bin_and_complete():
 
     # 새로 추가: 세척과 배수가 끝난 수거통을 원래 위치에 내려놓는다.
     status.set_state(ProcessState.MOVING, "수거통 원위치 및 초기 위치 복귀")
-    safe_movel(coords["way_point"], require_grasp=True)
-    safe_movel(coords["bin_approach"], require_grasp=True)
-    safe_movel(
-        coords["bin_pick"],
-        vel=SLOW_VELX,
-        acc=SLOW_ACCX,
-        require_grasp=True,
-    )
+    safe_movej(coords["way_point_j"], require_grasp=True)
+    safe_movej(coords["bin_approach"], require_grasp=True)
+    safe_movel_relative(coords["bin_pick"], require_grasp=True)
     gripper_open()
-    safe_movel(coords["bin_pick_top"])
+    safe_movel_relative(coords["bin_pick_top"])
     safe_movej(coords["home"])
     status.set_state(ProcessState.COMPLETE, "배출 및 세척 완료")
 
@@ -598,14 +622,44 @@ def run_process(mode: int):
 
 
 # ==============================================================================
-# [Service entry]
+# [Command topic entry]
 # ==============================================================================
-def handle_dump_start(request, response):
-    mode = int(g_node.get_parameter("dump_mode").value)
-    ok, msg = run_process(mode)
-    response.success = ok
-    response.message = msg
-    return response
+def handle_robot_command(msg: String):
+    """FastAPI가 발행한 작업 명령을 받아 전체 공정을 시작한다."""
+    try:
+        command = json.loads(msg.data)
+    except (json.JSONDecodeError, TypeError) as exc:
+        g_node.get_logger().error(f"/robot/command JSON 파싱 실패: {exc}")
+        return
+
+    if command.get("command") != "START":
+        g_node.get_logger().warning(
+            f"지원하지 않는 command 무시: {command.get('command')!r}"
+        )
+        return
+
+    task_id = command.get("task_id")
+    mode_id = command.get("mode_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        g_node.get_logger().error("/robot/command에 유효한 task_id가 없습니다.")
+        return
+    if isinstance(mode_id, bool) or not isinstance(mode_id, int):
+        g_node.get_logger().error(
+            f"task_id={task_id}: mode_id는 정수여야 합니다: {mode_id!r}"
+        )
+        return
+    if mode_id not in (DUMP_MODE_NORMAL, DUMP_MODE_STRONG):
+        g_node.get_logger().error(
+            f"task_id={task_id}: 지원하지 않는 mode_id={mode_id}"
+        )
+        return
+
+    g_node.get_logger().info(
+        f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}"
+    )
+    ok, result_message = run_process(mode_id)
+    log = g_node.get_logger().info if ok else g_node.get_logger().error
+    log(f"task_id={task_id}: {result_message}")
 
 
 # ==============================================================================
@@ -632,9 +686,8 @@ def main(args=None):
     init_robot_api()
     init_gripper_api()
 
-    # 명세서의 /robot/dump_cmd 역할: HMI/FastAPI에서 Trigger 호출 시 전체 공정 시작
-    # 프론트엔트/백엔드 연동 필요
-    node.create_service(Trigger, "/robot/dump_cmd", handle_dump_start)
+    # FastAPI가 발행하는 JSON 명령에서 task_id와 mode_id를 받아 전체 공정 시작
+    node.create_subscription(String, "/robot/command", handle_robot_command, 10)
 
     status.set_state(ProcessState.IDLE, "작업 대기")
 
@@ -646,7 +699,6 @@ def main(args=None):
         rclpy.spin(node)
     finally:
         try:
-            valve_close()
             gripper_open()
         except Exception:
             pass

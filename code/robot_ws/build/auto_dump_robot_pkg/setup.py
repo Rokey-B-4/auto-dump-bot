@@ -1,1 +1,0 @@
-/home/chaesong/auto-dump-bot/src/robot_ws/src/auto_dump_robot_pkg/setup.py

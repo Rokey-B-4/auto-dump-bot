@@ -10,6 +10,7 @@
   아래 좌표는 반드시 실제 지그/수거통/세척 위치에 맞게 교시 후 수정해야 한다.
 """
 
+import json
 import math
 import time
 from enum import Enum
@@ -17,7 +18,6 @@ from enum import Enum
 import rclpy
 import DR_init
 from std_msgs.msg import String, Bool, Int32
-from std_srvs.srv import Trigger
 from dsr_msgs2.srv import MoveStop
 from onrobot_rg_msgs.srv import SetCommand
 
@@ -711,14 +711,44 @@ def run_process(mode: int):
 
 
 # ==============================================================================
-# [Service entry]
+# [Command topic entry]
 # ==============================================================================
-def handle_dump_start(request, response):
-    mode = int(g_node.get_parameter("dump_mode").value)
-    ok, msg = run_process(mode)
-    response.success = ok
-    response.message = msg
-    return response
+def handle_robot_command(msg: String):
+    """FastAPI가 발행한 작업 명령을 받아 전체 공정을 시작한다."""
+    try:
+        command = json.loads(msg.data)
+    except (json.JSONDecodeError, TypeError) as exc:
+        g_node.get_logger().error(f"/robot/command JSON 파싱 실패: {exc}")
+        return
+
+    if command.get("command") != "START":
+        g_node.get_logger().warning(
+            f"지원하지 않는 command 무시: {command.get('command')!r}"
+        )
+        return
+
+    task_id = command.get("task_id")
+    mode_id = command.get("mode_id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        g_node.get_logger().error("/robot/command에 유효한 task_id가 없습니다.")
+        return
+    if isinstance(mode_id, bool) or not isinstance(mode_id, int):
+        g_node.get_logger().error(
+            f"task_id={task_id}: mode_id는 정수여야 합니다: {mode_id!r}"
+        )
+        return
+    if mode_id not in (DUMP_MODE_NORMAL, DUMP_MODE_STRONG):
+        g_node.get_logger().error(
+            f"task_id={task_id}: 지원하지 않는 mode_id={mode_id}"
+        )
+        return
+
+    g_node.get_logger().info(
+        f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}"
+    )
+    ok, result_message = run_process(mode_id)
+    log = g_node.get_logger().info if ok else g_node.get_logger().error
+    log(f"task_id={task_id}: {result_message}")
 
 
 # ==============================================================================
@@ -747,9 +777,8 @@ def main(args=None):
     init_robot_api()
     init_gripper_api()
 
-    # 명세서의 /robot/dump_cmd 역할: HMI/FastAPI에서 Trigger 호출 시 전체 공정 시작
-    # 프론트엔트/백엔드 연동 필요
-    node.create_service(Trigger, "/robot/dump_cmd", handle_dump_start)
+    # FastAPI가 발행하는 JSON 명령에서 task_id와 mode_id를 받아 전체 공정 시작
+    node.create_subscription(String, "/robot/command", handle_robot_command, 10)
 
     status.set_state(ProcessState.IDLE, "작업 대기")
 
