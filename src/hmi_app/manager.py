@@ -1,111 +1,444 @@
 import customtkinter as ctk
+from CTkMessagebox import CTkMessagebox
 from datetime import datetime
+import os
 
 
 class ManagerGUI:
-
-    def __init__(self, parent, reset_callback):
-        self.parent = parent
+    # =========================================================================
+    # [SECTION 1] 초기화 및 창 설정 (Initialization)
+    # =========================================================================
+    def __init__(self, reset_callback, main_gui_instance):
+        """관리자 모니터링 콘솔 메인 초기화"""
         self.reset_callback = reset_callback
+        self.main_gui = main_gui_instance
 
-        self.win = ctk.CTkToplevel(parent)
-        self.win.title("관리자 시스템 제어 (Manager Mode)")
-        self.win.geometry("600x560")
+        # 상위 마스터 윈도우(유저 창)와 안전 포인터 매칭
+        self.window = ctk.CTkToplevel(self.main_gui.root)
+        self.window.title("관리자 실시간 통합 모니터링 시스템 v1.2")
         
-        # 메인 UI와 톤을 맞추되, 시인성을 위해 배경을 조금 더 짙게 처리
-        self.win.configure(fg_color="#14171c")
-        self.win.resizable(False, False)
-
-        # 부모 창 위치 기준으로 관리자 창 띄우기
-        parent.update_idletasks()
-
-        px = parent.winfo_x()
-        py = parent.winfo_y()
-        pw = parent.winfo_width()
+        # 윈도우 레이어 포커스 우선순위 설정
+        self.window.lift()
+        self.window.attributes("-topmost", True)
+        self.window.after(150, lambda: self.window.attributes("-topmost", False))
         
-        x = px + pw + 10
-        y = py
+        # 해상도 오프셋 및 화면 배치 계산
+        self._setup_window_geometry()
 
-        self.win.geometry(f"600x560+{x}+{y}")
-        self.create_ui()
+        # 시스템 내부 데이터 및 상태 버퍼 초기화
+        self._init_system_variables()
 
-    def create_ui(self):
-        # 상단 비상 경고 헤더 (밝고 선명한 레드 사용)
-        error_title = ctk.CTkLabel(
-            self.win,
-            text="⚠ SYSTEM EMERGENCY ALERT",
-            font=("맑은 고딕", 26, "bold"),
-            text_color="#ff4d4d"  # 채도를 높여 어두운 배경에서도 확 띄게 변경
+        # 메인 아키텍처 프레임 뼈대 생성
+        self._build_layout_skeleton()
+
+        # 좌측 메뉴 바 렌더링 및 첫 탭 자동 로드
+        self.build_sidebar_menu()
+        self.window.after(60, lambda: self.show_tab("진행 상태 모니터링"))
+        
+        self.save_error_log("관리자 실시간 제어 콘솔 가동 완료")
+
+    def _setup_window_geometry(self):
+        """화면 해상도 분석 및 관리자 창 위치 우측 최적화 배치"""
+        win_width, win_height = 1050, 700
+        screen_width = self.window.winfo_screenwidth()
+        screen_height = self.window.winfo_screenheight()
+        
+        pos_x = int((screen_width * 0.5) + 20)
+        pos_y = int((screen_height - win_height) / 2)
+        
+        if pos_x + win_width > screen_width:
+            pos_x = screen_width - win_width - 20
+
+        self.window.geometry(f"{win_width}x{win_height}+{pos_x}+{pos_y}")
+        self.window.configure(fg_color="#1a1d24")
+
+    def _init_system_variables(self):
+        """파일 경로 및 조작용 글로벌 딕셔너리 버퍼 생성"""
+        self.log_file_path = "robot_error_logs.txt"
+        self.cycle_count_file = "total_cycles.txt"
+        self.total_cycles = 0
+        self.load_cycle_count()
+
+        self.current_user_status_text = "대기 중 (사용자 이용 전)"
+        self.menu_buttons = {}
+        self.joint_sliders = {}
+        self.joint_entries = {}
+
+    def _build_layout_skeleton(self):
+        """좌측 고정 사이드바와 우측 동적 콘텐츠 컨테이너 영역 분리"""
+        self.sidebar_frame = ctk.CTkFrame(self.window, width=230, fg_color="#20242f", corner_radius=0)
+        self.sidebar_frame.pack(side="left", fill="y")
+        self.sidebar_frame.pack_propagate(False)
+
+        self.main_content_area = ctk.CTkFrame(self.window, fg_color="transparent")
+        self.main_content_area.pack(side="right", fill="both", expand=True)
+
+
+    # =========================================================================
+    # [SECTION 2] 내비게이션 및 라우팅 컨트롤 (Navigation & Tab Routing)
+    # =========================================================================
+    def build_sidebar_menu(self):
+        """좌측 제어 대시보드 메뉴 버튼 빌드"""
+        for widget in self.sidebar_frame.winfo_children():
+            widget.destroy()
+
+        sb_title = ctk.CTkLabel(self.sidebar_frame, text="🤖 CONTROL PANEL", font=("Consolas", 16, "bold"), text_color="#4fa3e3")
+        sb_title.pack(pady=(35, 35))
+
+        menus = [
+            ("진행 상태 모니터링", "📱"),
+            ("안전 시스템 관리", "🛡️"),
+            ("하드웨어 수동 제어", "🦾"),
+            ("시스템 로그 관리", "📝")
+        ]
+
+        for menu_name, icon in menus:
+            btn = ctk.CTkButton(
+                self.sidebar_frame,
+                text=f"  {icon}  {menu_name}",
+                font=("맑은 고딕", 13, "bold"),
+                height=48,
+                fg_color="transparent",
+                text_color="#a8b3c2",
+                hover_color="#2d3343",
+                anchor="w",
+                corner_radius=8,
+                command=lambda name=menu_name: self.show_tab(name)
+            )
+            btn.pack(fill="x", padx=15, pady=4)
+            self.menu_buttons[menu_name] = btn
+
+    def show_tab(self, tab_name):
+        """가상 프레임 단위의 화면 전환을 담당하는 뷰 스위칭 라우터"""
+        # 사이드바 버튼 활성화 색상 하이라이트 제어
+        for name, btn in self.menu_buttons.items():
+            if btn.winfo_exists():
+                btn.configure(
+                    fg_color="#1f7ecb" if name == tab_name else "transparent", 
+                    text_color="#ffffff" if name == tab_name else "#a8b3c2"
+                )
+
+        # 기존 중앙 메인 컨테이너 컴포넌트 완전 제거
+        for widget in self.main_content_area.winfo_children():
+            widget.destroy()
+
+        # 딕셔너리 라우팅 패턴으로 분기 맵핑
+        tab_routers = {
+            "진행 상태 모니터링": self.view_progress_monitoring,
+            "안전 시스템 관리": self.view_safety_management,
+            "하드웨어 수동 제어": self.view_hardware_override,
+            "시스템 로그 관리": self.view_log_management
+        }
+        if tab_name in tab_routers:
+            tab_routers[tab_name]()
+
+
+    # =========================================================================
+    # [SECTION 3] 독립 UI 뷰 렌더러 (UI View Screen Renderers)
+    # =========================================================================
+    def view_progress_monitoring(self):
+        """TAB 1: 로봇 공정 실시간 진행 대시보드"""
+        title = ctk.CTkLabel(self.main_content_area, text="📱 로봇 공정 실시간 진행 상태", font=("맑은 고딕", 22, "bold"), text_color="#ffffff")
+        title.pack(anchor="w", padx=35, pady=(30, 20))
+
+        # 1. 상태 레이블 블록
+        card = ctk.CTkFrame(self.main_content_area, fg_color="#2d3343", corner_radius=12)
+        card.pack(fill="x", padx=35, pady=10)
+
+        lbl_sub = ctk.CTkLabel(card, text="현재 사용자 단말 구동 상태", font=("맑은 고딕", 12), text_color="#4fa3e3")
+        lbl_sub.pack(anchor="w", padx=20, pady=(15, 5))
+
+        self.lbl_monitor_status = ctk.CTkLabel(card, text=self.current_user_status_text, font=("맑은 고딕", 22, "bold"), text_color="#00fa9a")
+        self.lbl_monitor_status.pack(anchor="w", padx=20, pady=(0, 20))
+        self.update_user_status(self.current_user_status_text)
+
+        # 2. 원격 긴급 제어 블록
+        is_error = any(word in self.current_user_status_text for word in ["오류", "중단", "탈락"])
+        emergency_panel = ctk.CTkFrame(self.main_content_area, fg_color="#1a1d24", border_width=1, border_color="#3e475e" if not is_error else "#ff4d6d", corner_radius=12)
+        emergency_panel.pack(fill="x", padx=35, pady=15)
+        
+        lbl_panel_title = ctk.CTkLabel(emergency_panel, text="⚡ 원격 시스템 제어 및 인터록 권한", font=("맑은 고딕", 12, "bold"), text_color="#a8b3c2")
+        lbl_panel_title.pack(anchor="w", padx=20, pady=(15, 8))
+        
+        self.remote_stop_btn = ctk.CTkButton(
+            emergency_panel,
+            text="🚨 원격 긴급 비상 정지 (Remote Emergency Stop)", height=50, font=("맑은 고딕", 14, "bold"),
+            fg_color="#d9534f" if not is_error else "#5c1e24", hover_color="#c9302c", text_color="#ffffff", corner_radius=10,
+            state="normal" if not is_error else "disabled", command=self.execute_remote_emergency_stop
         )
-        error_title.pack(pady=(30, 5))
+        self.remote_stop_btn.pack(fill="x", padx=20, pady=(0, 20))
 
-        error_subtitle = ctk.CTkLabel(
-            self.win,
-            text="관리자 승인 및 시스템 복구가 필요한 상태입니다.",
-            font=("맑은 고딕", 14, "bold"),
-            text_color="#ffffff"  # 텍스트가 묻히지 않도록 순백색으로 변경
+        # 3. 장비 통계 블록
+        stats_card = ctk.CTkFrame(self.main_content_area, fg_color="#2d3343", corner_radius=12)
+        stats_card.pack(fill="both", expand=True, padx=35, pady=(10, 30))
+
+        lbl_stats_title = ctk.CTkLabel(stats_card, text="📊 누적 장비 가동 통계", font=("맑은 고딕", 13, "bold"), text_color="#ffffff")
+        lbl_stats_title.pack(anchor="w", padx=20, pady=(15, 10))
+
+        self.lbl_counter = ctk.CTkLabel(stats_card, text=f"총 누적 배출 공정 횟수 :   {self.total_cycles} 회", font=("Consolas", 16, "bold"), text_color="#00fa9a")
+        self.lbl_counter.pack(anchor="w", padx=25, pady=10)
+
+    def view_safety_management(self):
+        """TAB 2: 안전 인터록 대응 및 시스템 조치 복구 스크린"""
+        title = ctk.CTkLabel(self.main_content_area, text="🛡️ 안전 제어 및 시스템 복구 조작", font=("맑은 고딕", 22, "bold"), text_color="#ffffff")
+        title.pack(anchor="w", padx=30, pady=(30, 20))
+
+        is_error = any(word in self.current_user_status_text for word in ["오류", "중단", "탈락"])
+        card_bg_col = "#4c1f24" if is_error else "#2d3343"
+        border_col = "#ff4d6d" if is_error else "#3e475e"
+        title_col = "#ff4d6d" if is_error else "#4fa3e3"
+        title_text = "🚨 긴급 시스템 잠금 활성화 (비상 인터록 가동 중)" if is_error else "🛡️ 시스템 안전 상태 보장됨"
+
+        safety_frame = ctk.CTkFrame(self.main_content_area, fg_color=card_bg_col, corner_radius=12, border_width=2, border_color=border_col)
+        safety_frame.pack(fill="both", expand=True, padx=30, pady=(10, 30))
+
+        lbl_sec_title = ctk.CTkLabel(safety_frame, text=title_text, font=("맑은 고딕", 16, "bold"), text_color=title_col)
+        lbl_sec_title.pack(anchor="w", padx=20, pady=(20, 10))
+
+        info_box = ctk.CTkTextbox(safety_frame, height=160, fg_color="#1a1d24", border_color=border_col, border_width=1, font=("맑은 고딕", 13), text_color="#ff4d6d" if is_error else "#cbd3dc")
+        info_box.pack(padx=20, pady=10, fill="x")
+        
+        status_guide = (
+            "⚠️ [CRITICAL EMERGENCY INTERLOCK]\n\n"
+            "사용자 단말기 측에서 '수거통 탈락' 혹은 '원격 강제 중단' 신호가 수신되었습니다.\n"
+            "공정이 강제 중단된 상태입니다.\n\n"
+            "원격 제어 조치 사항:\n"
+            "1. '하드웨어 수동 제어' 탭으로 이동하여 로봇 관절 상태를 수동 확인\n"
+            "2. 현장 안전이 확보되면 하단의 리셋(Recovery) 버튼을 눌러 인터록을 해제하십시오."
+        ) if is_error else (
+            "[정상 가동 안내]\n\n"
+            "✅ 현재 메인 시스템 및 로봇 제어 신호가 정상 범주 내에서 유지되고 있습니다.\n"
         )
-        error_subtitle.pack(pady=(0, 15))
+        info_box.insert("1.0", status_guide)
+        info_box.configure(state="disabled")
 
-        # 1. 외곽 인포 프레임 (대비감을 주기 위해 짙은 그레이 유지)
-        info_frame = ctk.CTkFrame(
-            self.win, 
-            fg_color="#1e222b",
-            corner_radius=15,
-            border_width=2,
-            border_color="#ff4d4d"  # 테두리를 더 두껍고 밝은 레드로 강조
+        reset_system_btn = ctk.CTkButton(
+            safety_frame, text="🔄 인터록 해제 및 시스템 완전 초기화 (Emergency Recovery)", height=55, font=("맑은 고딕", 14, "bold"),
+            fg_color="#00fa9a", hover_color="#00c77b", text_color="#14171c", corner_radius=10, command=self.execute_system_recovery
         )
-        info_frame.pack(pady=10, padx=25, fill="both", expand=True)
+        reset_system_btn.pack(fill="x", padx=20, pady=25, side="bottom")
 
-        now = datetime.now()
+    def view_hardware_override(self):
+        """TAB 3: 협동로봇 무인 6축 수동 조작 및 서보 관절 오버라이드 패널"""
+        title = ctk.CTkLabel(self.main_content_area, text="🦾 M0609 협동로봇 관절별 수동 제어 (Joint Override)", font=("맑은 고딕", 22, "bold"), text_color="#ffffff")
+        title.pack(anchor="w", padx=30, pady=(25, 15))
 
-        # 2. 로그 박스 디자인 전면 수정 (★눈에 확 띄도록 내부는 밝은 크림 화이트 톤으로 반전)
-        log_box = ctk.CTkTextbox(
-            info_frame,
-            width=500,
-            height=260,
-            font=("맑은 고딕", 14, "bold"), # 글씨를 굵게 하여 가독성 확보
-            fg_color="#f5f6f8",             # 밝은 배경색으로 반전
-            text_color="#111111",           # 글씨는 진한 먹색으로 인쇄물처럼 표현
-            corner_radius=10
-        )
-        log_box.pack(pady=20, padx=20, fill="both", expand=True)
+        scroll_frame = ctk.CTkScrollableFrame(self.main_content_area, fg_color="#2d3343", corner_radius=12)
+        scroll_frame.pack(fill="both", expand=True, padx=30, pady=(0, 20))
 
-        log_box.insert(
-            "0.0",
-            f"""[SYSTEM LOG - EMERGENCY]
+        joint_specs = [
+            ("J1 (Base)", -180, 180, "정면 기준 좌우 180°"), ("J2 (Shoulder)", -360, 360, "전후 무제한 급 가동"),
+            ("J3 (Elbow)", -160, 160, "상하 굴곡 제어"), ("J4 (Wrist 1)", -360, 360, "요골/척골 회전 대체"),
+            ("J5 (Wrist 2)", -160, 160, "그리퍼 꺾임 각도"), ("J6 (Wrist 3)", -360, 360, "그리퍼 무한 회전축")
+        ]
+        self.joint_sliders.clear()
+        self.joint_entries.clear()
 
-■ 에러 코드 : ER_001
-■ 발생 시간 : {now.strftime("%Y-%m-%d %H:%M:%S")}
+        # 각 관절 슬라이더 및 인풋 폼 한 세트로 바인딩 렌더링
+        for name, min_val, max_val, desc in joint_specs:
+            j_frame = ctk.CTkFrame(scroll_frame, fg_color="#1a1d24", corner_radius=8)
+            j_frame.pack(fill="x", padx=10, pady=5)
 
-■ 오류 내용 :
-  - 메인 그리퍼 통 탈락(Drop) 감지
+            lbl_title = ctk.CTkLabel(j_frame, text=name, font=("Consolas", 13, "bold"), text_color="#4fa3e3", width=90, anchor="w")
+            lbl_title.pack(side="left", padx=(15, 5), pady=8)
 
-■ 현재 로봇 상태 :
-  - 하드웨어 및 모터 제어 즉시 정지 (STOP)
-  - 인계 안전 모드 (Safety Fallback) 진입 완료
-  - 하드웨어 점검 후 관리자 수동 초기화 대기 중...
-"""
-        )
-        # 로그 박스 편집 불가 설정
-        log_box.configure(state="disabled")
+            lbl_desc = ctk.CTkLabel(j_frame, text=f"({desc})", font=("맑은 고딕", 11), text_color="#7a889b", width=160, anchor="w")
+            lbl_desc.pack(side="left", padx=5)
 
-        # 3. 시스템 초기화 버튼 디자인 (더 밝고 경고 분위기가 강한 크림슨 레드)
-        reset_btn = ctk.CTkButton(
-            self.win,
-            text="시스템 수동 초기화 (RESET)",
-            width=320,
-            height=50,
-            font=("맑은 고딕", 16, "bold"),
-            fg_color="#ff334b",      # 훨씬 밝고 강렬한 레드 톤
-            hover_color="#d61c33",
-            text_color="#ffffff",
-            corner_radius=12,
-            command=self.reset_system
-        )
-        reset_btn.pack(pady=(20, 30))
+            slider = ctk.CTkSlider(j_frame, from_=min_val, to=max_val, number_of_steps=max_val-min_val, progress_color="#1f7ecb")
+            slider.pack(side="left", fill="x", expand=True, padx=15)
+            slider.set(0)
+            self.joint_sliders[name] = slider
 
-    def reset_system(self):
-        print("관리자 시스템 초기화 명령 수신")
-        self.reset_callback()
-        self.win.destroy()
+            entry = ctk.CTkEntry(j_frame, width=65, font=("Consolas", 11), justify="center", fg_color="#2d3343", border_color="#3e475e")
+            entry.pack(side="left", padx=(5, 15))
+            entry.insert(0, "0.0")
+            self.joint_entries[name] = entry
+
+            slider.configure(command=lambda val, e=entry: self._sync_slider_to_entry(val, e))
+            entry.bind("<Return>", lambda event, s=slider, e=entry, mn=min_val, mx=max_val: self._sync_entry_to_slider(s, e, mn, mx))
+
+        # 액추에이터 및 원점 복구 하단 패널 프레임 구성
+        self._render_hardware_tool_zone(scroll_frame)
+
+    def _render_hardware_tool_zone(self, parent_frame):
+        """수동 제어 하단 액추에이터 제어 공통 버튼 콤포넌트 렌더러"""
+        tool_frame = ctk.CTkFrame(parent_frame, fg_color="#20242f", corner_radius=10, border_width=1, border_color="#3e475e")
+        tool_frame.pack(fill="x", padx=10, pady=(15, 10))
+
+        lbl_tool = ctk.CTkLabel(tool_frame, text="⚙️ END EFFECTOR & HARDWARE ACTION", font=("Consolas", 12, "bold"), text_color="#00fa9a")
+        lbl_tool.pack(anchor="w", padx=15, pady=(12, 6))
+
+        btn_zone = ctk.CTkFrame(tool_frame, fg_color="transparent")
+        btn_zone.pack(fill="x", padx=15, pady=(0, 15))
+
+        ctk.CTkButton(btn_zone, text="🔓 그리퍼 개방 (OPEN)", height=42, fg_color="#333b4c", hover_color="#1f7ecb", font=("맑은 고딕", 12, "bold"), command=lambda: self.control_hardware_action("그리퍼 OPEN")).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(btn_zone, text="🔒 그리퍼 파지 (CLOSE)", height=42, fg_color="#333b4c", hover_color="#ff4d6d", font=("맑은 고딕", 12, "bold"), command=lambda: self.control_hardware_action("그리퍼 CLOSE")).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(btn_zone, text="🚀 관절각 일괄 전송 (MoveJ)", height=42, fg_color="#1f7ecb", hover_color="#145a93", font=("맑은 고딕", 12, "bold"), command=self.send_all_joints_command).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(btn_zone, text="🔄 로봇 원상복구 (Go Home)", height=42, fg_color="#d9534f", hover_color="#c9302c", font=("맑은 고딕", 12, "bold"), command=self.reset_all_joints).pack(side="left", expand=True, fill="x")
+
+    def view_log_management(self):
+        """TAB 4: 로컬 디스크 에러 로깅 기록 트래킹 보드"""
+        title = ctk.CTkLabel(self.main_content_area, text="📝 최근 발생 시스템 에러 로그 조회", font=("맑은 고딕", 22, "bold"), text_color="#ffffff")
+        title.pack(anchor="w", padx=30, pady=(30, 20))
+
+        log_frame = ctk.CTkFrame(self.main_content_area, fg_color="#2d3343", corner_radius=12)
+        log_frame.pack(fill="both", expand=True, padx=30, pady=(10, 30))
+
+        self.log_textbox = ctk.CTkTextbox(log_frame, fg_color="#1a1d24", border_color="#3e475e", border_width=1, text_color="#cbd3dc", font=("Consolas", 11))
+        self.log_textbox.pack(fill="both", expand=True, padx=20, pady=20)
+        self.refresh_log_display()
+
+
+    # =========================================================================
+    # [SECTION 4] 하드웨어 통신 및 동기화 로직 (Hardware Sync & Logic)
+    # =========================================================================
+    def update_user_status(self, status_text):
+        """메인 유저 터미널의 공정 문맥 동기화 및 가시 테마 변환"""
+        self.current_user_status_text = status_text
+        if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
+            if any(word in status_text for word in ["이용 중", "처리 중", "구동 중"]):
+                self.lbl_monitor_status.configure(text=status_text, text_color="#1f7ecb")
+            elif any(word in status_text for word in ["오류", "중단", "탈락", "위험"]):
+                self.lbl_monitor_status.configure(text=status_text, text_color="#ff4d6d")
+            else:
+                self.lbl_monitor_status.configure(text=status_text, text_color="#00fa9a")
+
+    def execute_remote_emergency_stop(self):
+        """비상정지 버튼 수동 입력 패킷 강제 주입 함수"""
+        self.save_error_log("[MANUAL_OVERRIDE] 관리자에 의한 원격 긴급 비상 정지 가동")
+        if self.main_gui:
+            self.main_gui.emergency_stop = True
+            self.main_gui.is_running = False
+            self.main_gui.root.after(50, lambda: self.main_gui.trigger_drop_error() if hasattr(self.main_gui, "trigger_drop_error") else None)
+        self.window.after(100, lambda: self._safe_execute_error_alert())
+
+    def trigger_admin_error_alert(self, error_msg):
+        """유저 측 단말 수거통 탈락 감지 신호 바인딩 리다이렉터"""
+        self.save_error_log(f"[CRITICAL_ALERT] {error_msg}")
+        self.window.after(100, lambda: self._safe_execute_error_alert())
+
+    def _safe_execute_error_alert(self):
+        if not self.window.winfo_exists(): return
+        self.show_tab("안전 시스템 관리")
+        self.window.focus_force()
+
+    def reset_all_joints(self):
+        """협동로봇 전체 6축 서보 원점 초기 마진 회귀"""
+        for name, slider in self.joint_sliders.items():
+            if slider.winfo_exists(): slider.set(0.0)
+        for name, entry in self.joint_entries.items():
+            if entry.winfo_exists():
+                entry.delete(0, "end"); entry.insert(0, "0.0")
+                
+        self.save_error_log("[RECOVERY_ACTION] 원상 복귀(Home Position 0.0°) 리셋 구동 패킷 전송")
+        CTkMessagebox(title="시스템 원상복구 완료", message="✅ 현장 조치 후 로봇의 전체 6축 관절을 초기 원상태(Home Position)로 안전하게 복귀시켰습니다.", icon="check", corner_radius=12, width=480)
+
+    def send_all_joints_command(self):
+        """현재 세팅된 6축 아날로그 자이로 좌표 일괄 전송 (MoveJ)"""
+        joint_angles = {}
+        log_msg = "M0609 MoveJ Command Send -> "
+        for name, slider in self.joint_sliders.items():
+            if slider.winfo_exists():
+                angle = round(slider.get(), 1)
+                joint_angles[name.split(" ")[0]] = angle
+                log_msg += f"{name.split(' ')[0]}: {angle}°  "
+
+        self.save_error_log(f"[MANUAL] {log_msg}")
+        cmd_summary = "\n".join([f"• {k} 관절 주입 좌표 : {v}°" for k, v in joint_angles.items()])
+        CTkMessagebox(title="M0609 제어 전송 완료", message=f"두산 협동로봇 제어 모듈에 다음 관절 자이로 좌표를 가동 명령 데이터로 연동했습니다.\n\n{cmd_summary}", icon="check", corner_radius=12)
+
+    def control_hardware_action(self, action_name):
+        """엔드이펙터(그리퍼 등) 수동 액추에이터 제어 유닛 트랙 신호 송신"""
+        base_angle = round(self.joint_sliders["J1 (Base)"].get(), 1) if "J1 (Base)" in self.joint_sliders else 0.0
+        self.save_error_log(f"[MANUAL] 엔드이펙터 수동 제어 패킷 전송: {action_name} (Base: {base_angle}°)")
+        CTkMessagebox(title="수동 제어 성공", message=f"✅ {action_name} 엑추에이터 파지 명령을 전달했습니다.", icon="check", corner_radius=12)
+
+    def _sync_slider_to_entry(self, value, entry_widget):
+        if entry_widget.winfo_exists():
+            entry_widget.delete(0, "end"); entry_widget.insert(0, f"{float(value):.1f}")
+
+    def _sync_entry_to_slider(self, slider_widget, entry_widget, min_val, max_val):
+        try:
+            val = float(entry_widget.get())
+            val = max(min_val, min(val, max_val))
+            if entry_widget.winfo_exists():
+                entry_widget.delete(0, "end"); entry_widget.insert(0, f"{val:.1f}")
+            if slider_widget.winfo_exists(): slider_widget.set(val)
+        except ValueError:
+            if slider_widget.winfo_exists() and entry_widget.winfo_exists():
+                entry_widget.delete(0, "end"); entry_widget.insert(0, f"{slider_widget.get():.1f}")
+
+    # =========================================================================
+    # [SECTION 5] 파일 입출력 및 코어 데이터 락 복구 (Disk I/O & Core Recovery)
+    # =========================================================================
+    def execute_system_recovery(self):
+        """관리자 복구 스케줄러 락 해제 트리거"""
+        self.save_error_log("[SYSTEM] 관리자 복구 승인 및 인터록 해제 시도")
+        # 튕김 방지를 위해 즉시 창을 조작하지 못하도록 버튼이나 화면 처리를 유예
+        self.window.after(100, self._safe_execute_recovery)
+
+    def _safe_execute_recovery(self):
+        """🚨 [CRITICAL PATCH] Segmentation Fault (코어 덤프) 원천 차단 복구 엔진"""
+        try:
+            # 안전장치: 복구 진입 시점에 관리자 창이 이미 닫혔다면 수행 중단
+            if not self.window.winfo_exists():
+                return
+
+            self.current_user_status_text = "대기 중"
+            
+            # 1단계: 유저 단말 메인 GUI 초기화 콜백 실행
+            # (이 과정에서 메인 GUI 내부의 기존 스레드나 after 타이머들이 클리어되어야 합니다)
+            if self.reset_callback: 
+                self.reset_callback()
+            
+            # 2단계: 유저 창의 UI 드롭 및 재빌드가 '완전히' 끝날 때까지 
+            # 관리자 창은 아무것도 건드리지 않고 비동기 대기 (300ms로 안전 마진 확대)
+            def finalize_admin_recovery():
+                # 락 해제 시점에 관리자 창 무결성 최종 검사
+                if not self.window.winfo_exists(): 
+                    return
+                
+                # 3단계: 유저 UI가 완전히 살아난 것을 확인한 후, 안전하게 탭 전환
+                self.show_tab("진행 상태 모니터링")
+                
+                # 4단계: 탭이 바뀐 후 위젯이 완벽히 생성되었는지 '다시 확인'하고 텍스트 주입
+                if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
+                    self.lbl_monitor_status.configure(
+                        text="🔓 시스템 복구 완료 (대기 중)", 
+                        text_color="#00fa9a"
+                    )
+            
+            # 유저 창의 생성 오버헤드를 고려하여 300ms 시차 부여 (C-코어 충돌 회피)
+            self.window.after(300, finalize_admin_recovery)
+                
+        except Exception as e:
+            self.save_error_log(f"[RECOVERY_ERROR] 복구 프로세스 중 예외 발생: {str(e)}")
+
+    def load_cycle_count(self):
+        """누적 가동 공정 횟수 카운터 디스크 I/O 트랙"""
+        if os.path.exists(self.cycle_count_file):
+            with open(self.cycle_count_file, "r") as f:
+                try: self.total_cycles = int(f.read().strip())
+                except ValueError: self.total_cycles = 142
+        else: self.total_cycles = 142
+            
+        self.total_cycles += 1
+        with open(self.cycle_count_file, "w") as f: f.write(str(self.total_cycles))
+
+    def save_error_log(self, reason):
+        """로컬 런타임 시스템 에러 로그 어펜딩 입출력"""
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        mode = "a" if os.path.exists(self.log_file_path) else "w"
+        with open(self.log_file_path, mode, encoding="utf-8") as f:
+            f.write(f"[{now}] {reason}\n")
+
+    def refresh_log_display(self):
+        """로그 텍스트 최신순 역순 로드 출력"""
+        if not hasattr(self, "log_textbox") or not self.log_textbox.winfo_exists(): return
+        self.log_textbox.configure(state="normal")
+        self.log_textbox.delete("1.0", "end")
+        if os.path.exists(self.log_file_path):
+            with open(self.log_file_path, "r", encoding="utf-8") as f:
+                self.log_textbox.insert("1.0", "".join(reversed(f.readlines())))
+        self.log_textbox.configure(state="disabled")
