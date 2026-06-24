@@ -165,8 +165,8 @@ async def start_dump(payload: TaskStartRequest):
 
         conn.commit()
 
-        # [나중에 뚫을 곳]: 여기에 ROS2 노드로 구동 신호를 전송하는 코드가 들어갈 자리!
-        # 현재는 DB에 기록만 하고 성공 응답을 주지만, 다음 단계에서는 여기서 robot_bridge를 통해 ROS 2 제어 노드에 "로봇 움직여라!" 하고 Publisher나 Action Client로 명령을 날려야함
+        # ROS2 제어 노드에 "배출 시작" 명령 하달 (상행 파이프라인)
+        bridge_manager.publish_command(task_id=task_id, mode_id=payload.mode_id)
 
         return {
             "result": "SUCCESS",
@@ -214,6 +214,73 @@ async def log_error(payload: ErrorLogRequest):
 
     except Exception as e:
         conn.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+# [핵심 API 3] 배출 작업 전체 이력 조회 (/api/dump/history)
+@app.get("/api/dump/history", summary="배출 작업 전체 이력 조회 (최신순)")
+async def get_dump_history():
+    """
+    tb_dump_history 테이블의 전체 작업 이력을 시작 시간 기준 최신순으로 조회.
+    Tkinter 대시보드의 이력 테이블/리스트뷰에 표시할 데이터를 제공.
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            SELECT
+                h.task_id,
+                h.mode_id,
+                m.mode_name,
+                h.start_time,
+                h.end_time,
+                h.status
+            FROM tb_dump_history h
+            LEFT JOIN tb_dump_modes m ON h.mode_id = m.mode_id
+            ORDER BY h.start_time DESC
+        """)
+        rows = cursor.fetchall()
+        # sqlite3.Row 객체는 JSON으로 바로 직렬화 안 되므로 dict로 변환
+        history = [dict(row) for row in rows]
+
+        return {"result": "SUCCESS", "count": len(history), "data": history}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+# [핵심 API 4] 최근 에러 로그 조회 (/api/error/logs)
+@app.get("/api/error/logs", summary="최근 에러 로그 조회")
+async def get_error_logs(limit: int = 50):
+    """
+    tb_error_log 테이블의 최근 에러 기록을 최신순으로 조회.
+    limit 쿼리 파라미터로 조회 개수를 제한 (기본 50건).
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            SELECT
+                error_id,
+                task_id,
+                error_code,
+                error_msg,
+                error_time
+            FROM tb_error_log
+            ORDER BY error_time DESC
+            LIMIT ?
+        """, (limit,))
+        rows = cursor.fetchall()
+        logs = [dict(row) for row in rows]
+
+        return {"result": "SUCCESS", "count": len(logs), "data": logs}
+
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()

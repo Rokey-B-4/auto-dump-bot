@@ -20,7 +20,7 @@ connection_manager.py로 이동했으므로 이 파일에서는 제거했음
 이 코드는 "ROS 2의 스레드 환경"에서 들어오는 실시간 데이터를 "FastAPI의 비동기(AsyncIO) 루프"로 
 안전하게 던져주는 스레드 안전(Thread-safe) 브리지 역할을 완벽하게 수행하고 있음
 """
-
+import json
 import logging
 import threading
 import time
@@ -34,12 +34,33 @@ from std_msgs.msg import String  # 실제 로봇 상태 토픽 메시지 타입�
 logger = logging.getLogger(__name__)
 
 ROS_NODE_NAME = "fastapi_robot_bridge"
-ROS_TOPIC_NAME = "/robot_status"
+
+# 현민님의 StatusBus가 발행하는 3개 토픽
+TOPIC_PROCESS_STATE = "/robot/process_state"
+TOPIC_MOTION_STATUS = "/robot/motion_status"
+TOPIC_SAFETY_EVENT = "/robot/safety_event"
+TOPIC_COMMAND = "/robot/command"
+
 SPIN_TIMEOUT_SEC = 0.1
+
+def _split_colon(raw: str) -> tuple[str, str]:
+    """
+    "state" 또는 "state:message" 형태의 문자열을
+    (state, message) 튜플로 안전하게 분리.
+
+    현민님 코드의 publish 규칙:
+        text = state.value if not msg else f"{state.value}:{msg}"
+    즉 msg가 없으면 콜론이 아예 없을 수 있음 -> split(":", 1)로 1회만 분리하고
+    두 번째 값이 없으면 빈 문자열로 채움.
+    """
+    if ":" in raw:
+        head, _, tail = raw.partition(":")
+        return head, tail
+    return raw, ""
+
 
 class RobotBridgeManager:
     """ROS2 Node + Executor + Thread 생명주기를 관리하는 매니저."""
-    # 리지용 노드 이름과 구독할 토픽명("/robot_status"), 그리고 CPU를 과점유하지 않고 안전한 셧다운을 하기 위한 루프 주기(0.1초)를 선언
 
     def __init__(self) -> None:
         self.node: Node | None = None
@@ -49,6 +70,7 @@ class RobotBridgeManager:
         self.queue: Queue | None = None
         self._stop_event = threading.Event()
         # ★ 종료 제어의 핵심. 스레드 간에 "이제 그만 멈춰!"라는 신호를 안전하게 주고받기 위한 플래그(Flag) 객체
+        self.command_pub = None  # publish_command에서 사용할 Publisher (start_bridge에서 생성)
 
     # ------------------------------------------------------------------
     def start_bridge(self, fastapi_loop: AbstractEventLoop, output_queue: Queue) -> None:
@@ -71,14 +93,28 @@ class RobotBridgeManager:
         self.loop = fastapi_loop
         self.queue = output_queue
 
-        # 1. 로봇 모션/상태 토픽 구독(Subscriber) 설정
-        self.subscription = self.node.create_subscription(
-            # Subscriber 등록: "/robot_status" 토픽으로 메시지(String)가 들어올 때마다 _status_callback 함수가 실행되도록 구독을 시작
+        # 1. 현민님 StatusBus 규격에 맞춘 3개 토픽 구독
+        self.process_state_sub = self.node.create_subscription(
             String,
-            ROS_TOPIC_NAME,
-            self._status_callback,
+            TOPIC_PROCESS_STATE,
+            self._process_state_callback,
             10,
         )
+        self.motion_status_sub = self.node.create_subscription(
+            String,
+            TOPIC_MOTION_STATUS,
+            self._motion_status_callback,
+            10,
+        )
+        self.safety_event_sub = self.node.create_subscription(
+            String,
+            TOPIC_SAFETY_EVENT,
+            self._safety_event_callback,
+            10,
+        )
+
+        #  명령 하달용 Publisher 생성
+        self.command_pub = self.node.create_publisher(String, TOPIC_COMMAND, 10)
 
         # 2. 기존과 동일하게 타이머도 유지 (헬스체크/디버깅 용도)
         self.timer = self.node.create_timer(1.0, self.timer_callback)
@@ -151,27 +187,104 @@ class RobotBridgeManager:
     def timer_callback(self) -> None:
         print("Timer works!", flush=True)
 
-    def _status_callback(self, msg: String) -> None:
+    # ------------------------------------------------------------------
+    # 추가상행 파이프라인 (FastAPI -> ROS) 진입점
+    # ------------------------------------------------------------------
+    def publish_command(self, task_id: str, mode_id: int) -> None:
         """
-        ROS 콜백 스레드에서 실행됨.
+        FastAPI 요청 스레드(uvicorn worker)에서 직접 호출됨.
 
-        절대 이 안에서 WebSocket이나 connection_manager를 직접 호출하지 않고,
-        call_soon_threadsafe로 메인 이벤트 루프의 Queue에만 데이터를 넘김
-
-        문제의 원인이었던 부분 완벽 해결: 이 함수는 FastAPI가 아닌 ROS 2 스레드 위에서 실행됨
-        여기서 AsyncIO 영역인 웹소켓을 직접 건드리면 스레드가 꼬여서 터졌던 것
+        주의: rclpy의 Publisher.publish()는 ROS 2 내부적으로 스레드 세이프하게
+        설계되어 있어(rmw 레이어가 락을 관리함), call_soon_threadsafe 없이
+        바로 호출해도 안전함. 하행(Queue) 파이프라인과는 방향이 반대이므로
+        별도의 동기화 장치가 필요 없음 — 단, command_pub이 아직 초기화되지
+        않은 경우(start_bridge 호출 전)를 방어적으로 체크함.
         """
-        print(f"ROS2 Topic 수신]: {msg.data}", flush=True)
+        if self.command_pub is None or self.node is None:
+            logger.error(
+                "publish_command 호출 실패: ROS Bridge가 아직 시작되지 않음."
+            )
+            return
 
-        payload = {
-            "status": msg.data,
+        body = {
+            "command": "START",
+            "task_id": task_id,
+            "mode_id": mode_id,
             "timestamp": time.time(),
         }
+        msg = String(data=json.dumps(body, ensure_ascii=False))
 
+        self.command_pub.publish(msg)
+        print(f"[ROS2 /robot/command 발행]: {msg.data}", flush=True)
+
+    # ------------------------------------------------------------------
+    # ROS 콜백 3종 (모두 ROS 스레드에서 실행됨)
+    #
+    # 절대 이 안에서 WebSocket이나 connection_manager를 직접 호출하지 않고,
+    # call_soon_threadsafe로 메인 이벤트 루프의 Queue에만 데이터를 넘김.
+    #
+    # 문제의 원인이었던 부분 완벽 해결: 이 함수는 FastAPI가 아닌 ROS 2 스레드
+    # 위에서 실행됨. 여기서 AsyncIO 영역인 웹소켓을 직접 건드리면
+    # 스레드가 꼬여서 터졌던 것.
+    # ------------------------------------------------------------------
+    
+    def _process_state_callback(self, msg: String) -> None:
+        """
+        /robot/process_state 수신.
+        StatusBus.set_state()가 publish하는 토픽 (motion_status와 동일 포맷).
+        "state" 또는 "state:message" 형태.
+        """
+        print(f"[ROS2 /robot/process_state 수신]: {msg.data}", flush=True)
+
+        state, message = _split_colon(msg.data)
+        payload = {
+            "type": "PROCESS_STATE",
+            "state": state,
+            "message": message,
+            "timestamp": time.time(),
+        }
+        self._dispatch(payload)
+
+    def _motion_status_callback(self, msg: String) -> None:
+        """
+        /robot/motion_status 수신.
+        StatusBus.set_state()가 동시에 publish하는 토픽.
+        "state" 또는 "state:message" 형태.
+        """
+        print(f"[ROS2 /robot/motion_status 수신]: {msg.data}", flush=True)
+
+        motion, message = _split_colon(msg.data)
+        payload = {
+            "type": "MOTION_STATUS",
+            "motion": motion,
+            "message": message,
+            "timestamp": time.time(),
+        }
+        self._dispatch(payload)
+
+    def _safety_event_callback(self, msg: String) -> None:
+        """
+        /robot/safety_event 수신.
+        StatusBus.publish_safety()가 publish하는 토픽.
+        "code:msg" 형태 (항상 콜론 포함).
+        """
+        print(f"[ROS2 /robot/safety_event 수신]: {msg.data}", flush=True)
+
+        error_code, error_msg = _split_colon(msg.data)
+        payload = {
+            "type": "SAFETY_EVENT",
+            "error_code": error_code,
+            "error_msg": error_msg,
+            "timestamp": time.time(),
+        }
+        self._dispatch(payload)
+
+    # ------------------------------------------------------------------
+
+    def _dispatch(self, payload: dict) -> None:
+        """ROS 스레드 -> 메인 이벤트 루프로 payload 전달 예약 (공통 헬퍼)."""
         if self.loop is not None and self.queue is not None:
             self.loop.call_soon_threadsafe(self._enqueue, payload)
-            # ROS 스레드는 오직 데이터 팩(payload)만 예쁘게 포장한 뒤, 
-            # 메인 비동기 루프(self.loop)에게 "이봐 메인 루프, 너 여유로울 때 이 _enqueue 함수 좀 실행해 줘!" 하고 안전하게 예약을 함 
 
     def _enqueue(self, payload: dict) -> None:
         """메인 이벤트 루프 안에서 실행됨 (call_soon_threadsafe에 의해 스케줄됨)."""
