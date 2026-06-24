@@ -1,0 +1,18 @@
+# 백엔드 아키텍쳐 설계 이유
+
+현재 구조(config.py, connection_manager.py, database.py, models.py, robot_bridge.py, main.py)는 관심사 분리(Separation of Concerns)와 
+단일 책임 원칙(Single Responsibility Principle)을 철저히 따른 백엔드 표준 아키텍처
+
+- 지보수성 및 확장성 극대화: 
+기존처럼 RobotBridge가 웹소켓과 ROS를 모두 쥐고 있으면 코드가 스파게티가 됨.
+구조를 쪼갬으로써 "로봇 통신(ROS 2)이 바뀌면 robot_bridge.py만", "DB 테이블이 바뀌면 models.py만", 
+"웹소켓 전송 방식이 바뀌면 connection_manager.py만" 수정하면 되므로 사이드 이펙트가 최소화됨.
+
+- 멀티스레드 환경의 안정성 확보: 
+FastAPI의 AsyncIO 루프와 ROS 2의 Executor 스레드는 물과 기름 같음.
+이들을 독립된 모듈로 분리하고 중간에 Queue를 둠으로써, 스레드 간 간섭 없이 각자의 역할에만 집중할 수 있는 안전한 브리지 구조가 완성됨.
+
+- 협업 효율성 (Interface 기반 개발): 
+팀원들이 코드를 가져왔을 때 바로 꽂을 수 있는 이유가 바로 이 구조 덕분임. 
+프론트엔드/Tkinter 담당자와는 main.py와 connection_manager.py를 중심으로 소통하고, 
+로봇 제어 담당자와는 robot_bridge.py만 보며 데이터 규격(Interface)을 맞추면 되기 때문에 병렬 개발이 가능해짐!

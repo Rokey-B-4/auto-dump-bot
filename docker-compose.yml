@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  fastapi-backend:
+    # build 설정을 context와 dockerfile 경로로 세부 지정
+    build:
+      context: ./src/backend
+      dockerfile: Dockerfile
+    container_name: autodump_backend
+
+    network_mode: "host"
+    # 호스트의 ROS 2 공유 메모리(IPC) 영역을 컨테이너와 직접 공유
+    ipc: "host"
+    
+    # 볼륨 매핑도 백엔드 폴더에 맞게 수정
+    volumes:
+      - ./src/backend:/app
+    environment:
+      - PYTHONUNBUFFERED=1
+      - ROS_DOMAIN_ID=83 # 이거 각자 도메인 아이디로 하세요!!
+      - ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST # 환경변수 주입
+    restart: always
