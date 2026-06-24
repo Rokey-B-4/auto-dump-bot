@@ -1,0 +1,23 @@
+[1.511s] Invoking command in '/home/chaesong/auto-dump-bot/src/robot_ws/build/auto_dump_robot_pkg': PYTHONPATH=/home/chaesong/auto-dump-bot/src/robot_ws/build/auto_dump_robot_pkg/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/chaesong/auto-dump-bot/src/robot_ws/install/auto_dump_robot_pkg/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/chaesong/auto-dump-bot/src/robot_ws/build/auto_dump_robot_pkg/build --no-deps symlink_data
+[2.427s] running develop
+[3.216s] running egg_info
+[3.216s] creating auto_dump_robot_pkg.egg-info
+[3.217s] writing auto_dump_robot_pkg.egg-info/PKG-INFO
+[3.217s] writing dependency_links to auto_dump_robot_pkg.egg-info/dependency_links.txt
+[3.217s] writing entry points to auto_dump_robot_pkg.egg-info/entry_points.txt
+[3.218s] writing requirements to auto_dump_robot_pkg.egg-info/requires.txt
+[3.218s] writing top-level names to auto_dump_robot_pkg.egg-info/top_level.txt
+[3.218s] writing manifest file 'auto_dump_robot_pkg.egg-info/SOURCES.txt'
+[3.221s] reading manifest file 'auto_dump_robot_pkg.egg-info/SOURCES.txt'
+[3.222s] writing manifest file 'auto_dump_robot_pkg.egg-info/SOURCES.txt'
+[3.225s] running build_ext
+[3.225s] Creating /home/chaesong/auto-dump-bot/src/robot_ws/install/auto_dump_robot_pkg/lib/python3.10/site-packages/auto-dump-robot-pkg.egg-link (link to .)
+[3.227s] 
+[3.227s] Installed /home/chaesong/auto-dump-bot/src/robot_ws/build/auto_dump_robot_pkg
+[3.227s] running symlink_data
+[3.227s] creating /home/chaesong/auto-dump-bot/src/robot_ws/install/auto_dump_robot_pkg/share/ament_index
+[3.228s] creating /home/chaesong/auto-dump-bot/src/robot_ws/install/auto_dump_robot_pkg/share/ament_index/resource_index
+[3.228s] creating /home/chaesong/auto-dump-bot/src/robot_ws/install/auto_dump_robot_pkg/share/ament_index/resource_index/packages
+[3.228s] symbolically linking /home/chaesong/auto-dump-bot/src/robot_ws/build/auto_dump_robot_pkg/resource/auto_dump_robot_pkg -> /home/chaesong/auto-dump-bot/src/robot_ws/install/auto_dump_robot_pkg/share/ament_index/resource_index/packages
+[3.228s] symbolically linking /home/chaesong/auto-dump-bot/src/robot_ws/build/auto_dump_robot_pkg/package.xml -> /home/chaesong/auto-dump-bot/src/robot_ws/install/auto_dump_robot_pkg/share/auto_dump_robot_pkg
+[3.282s] Invoked command in '/home/chaesong/auto-dump-bot/src/robot_ws/build/auto_dump_robot_pkg' returned '0': PYTHONPATH=/home/chaesong/auto-dump-bot/src/robot_ws/build/auto_dump_robot_pkg/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/chaesong/auto-dump-bot/src/robot_ws/install/auto_dump_robot_pkg/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py develop --editable --build-directory /home/chaesong/auto-dump-bot/src/robot_ws/build/auto_dump_robot_pkg/build --no-deps symlink_data
