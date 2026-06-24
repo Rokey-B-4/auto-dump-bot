@@ -32,11 +32,19 @@ DR_init.__dsr__model = ROBOT_MODEL
 # ==============================================================================
 VELOCITYX, ACCX = 30, 30
 VELOCITYJ, ACCJ = 30, 30
-SLOW_VELX, SLOW_ACCX = 15, 20
+SLOW_VELX, SLOW_ACCX = 20, 20
 
-# 새로 추가: 털기 왕복 동작은 일반 이송보다 빠르게 수행한다.
-SHAKE_VEL, SHAKE_ACC = 50, 50
+# 주기 털기 반복 횟수
 SHAKE_REPEAT_COUNT = 3
+
+# move_periodic 털기 파라미터: [X, Y, Z, Rx, Ry, Rz]
+DUMP_NORMAL_PERIODIC_AMP = [0, 10, 0, 0, 0, 0]
+DUMP_STRONG_PERIODIC_AMP = [0, 18, 0, 0, 0, 0]
+WATER_PERIODIC_AMP = [0, 12, 0, 0, 0, 0]
+DUMP_NORMAL_PERIOD = 0.8
+DUMP_STRONG_PERIOD = 0.65
+WATER_PERIOD = 0.8
+PERIODIC_SHAKE_ATIME = 0.2
 
 # 충돌/이탈 감지 기준
 COLLISION_FORCE_N = 30.0      # F/T 센서 외력 임계값[N]
@@ -44,7 +52,7 @@ GRIPPER_INPUT_IDX = 1         # 실제 파지 확인용 Tool DI 번호. 현장 �
 
 # 외력제어 파라미터
 FORCE_TH = 20.0  # place시 외력감지 Threshold
-DESIRED_FORCE_X = 25.0     # 세척 위치 안착 방향 힘[N] - 베이스 좌표계 +X 방향
+DESIRED_FORCE_X = 45.0     # 세척 위치 안착 방향 힘[N] - 베이스 좌표계 +X 방향
 DESIRED_FORCE_Z = 10.0     # 세척 위치 Z방향 힘[N] - 실기 테스트 후 조정
 COMPLIANCE_X = 300         # X 순응 강성 - 낮을수록 +X 방향 접촉면을 부드럽게 따라감
 COMPLIANCE_Y = 3000        # Y 순응 강성 - Y방향의 불필요한 움직임을 억제
@@ -99,13 +107,9 @@ def coordinates():
         "bin_pick": posx(466.08, -202.23, 66.98, 95.02, 88.55, -85.96),
         "bin_pick_top": posx(466.04, -196.34, 199.37, 92.36, 90.60, -89.12),
 
-        # 음식물 배출 및 털기 위치
+        # 음식물 배출 위치
         "dump_approach": posx(466.08, -4.19, 199.37, 90.27, 92.28, -87.35),
         "dump_tilt": posj(-15.97, 35.06, 102.51, 76.35, 99.09, -80.00),
-        "shake_weak_x": posx(453.60, -0.61, 238.28, 90.26, 92.19, 54.22),
-        "shake_weak_j": posj(-15.97, 29.29, 103.47, 77.22, 100.26, -80.00),
-        "shake_strong_j": posj(-15.93, 28.53, 103.30, 77.89, 104.24, -80.00),
-        "shake_strong_x": posx(466.12, -4.19, 194.30, 90.26, 92.28, 58.99),
 
         # 배출 위치에서 세척 위치로 이동할 때의 경유점
         "way_point": posx(311.45, -272.72, 129.42, 57.31, 88.51, -85.82),
@@ -113,14 +117,13 @@ def coordinates():
         # 세척 위치
         "wash_approach": posx(454.14, 17.88, 112.29, 0.72, 93.48, -87.55),
         "wash_place": posx(482.61, 17.07, 112.91, 0.82, 93.14, -87.60),
-        "wash_pick": posx(484.18, 8.30, 91.97, 2.53, 93.50, -88.50),
         "wash_close": posx(685.11, -87.56, 361.56, 84.15, 134.72, -92.30),
         "wash_open": posj(-14.96, 55.93, 21.05, 46.65, 105.56, -99.25),
+        "wash_pick": posx(484.18, 8.30, 91.97, 2.53, 93.50, -88.50),
 
         # 세척수 배출 위치
         "water_out_approach": posx(557.53, -170.89, 145.02, 90.10, 94.08, -91.72),
         "water_out_tilt": posj(-28.34, 54.57, 71.90, 68.79, 109.80, -90.00),
-        "water_out_shake": posx(554.47, -173.86, 182.70, 89.97, 91.09, 27.51),
 
         # 초기 대기 및 종료 위치
         "home": posj(-0.45, 0.66, 88.77, -0.77, 87.93, -234.35),
@@ -149,6 +152,7 @@ def init_robot_api():
         _ds._ros2_set_singularity_handling,
         _ds._ros2_movej,
         _ds._ros2_movel,
+        _ds._ros2_move_periodic,
         _ds._ros2_check_motion,
         _ds._ros2_get_tool_force,
         _ds._ros2_get_current_posx,
@@ -258,14 +262,14 @@ def stop(mode=None):
     return 0 if result and result.success else -1
 
 
-def set_external_force_reset(mode=0, offset=None):
-    """DSR_ROBOT2에 함수가 있을 때만 호출하는 호환 래퍼."""
-    if hasattr(_ds, "set_external_force_reset"):
-        if offset is None:
-            return _ds.set_external_force_reset(mode)
-        return _ds.set_external_force_reset(mode, offset)
-    g_node.get_logger().warn("set_external_force_reset() is not available in this DSR_ROBOT2.py; skipped")
-    return 0
+# def set_external_force_reset(mode=0, offset=None):
+#     """DSR_ROBOT2에 함수가 있을 때만 호출하는 호환 래퍼."""
+#     if hasattr(_ds, "set_external_force_reset"):
+#         if offset is None:
+#             return _ds.set_external_force_reset(mode)
+#         return _ds.set_external_force_reset(mode, offset)
+#     g_node.get_logger().warn("set_external_force_reset() is not available in this DSR_ROBOT2.py; skipped")
+#     return 0
 
 
 # ==============================================================================
@@ -361,6 +365,22 @@ def safe_movel(target, vel=VELOCITYX, acc=ACCX, require_grasp=False):
         _ds.wait(0.05)
 
 
+def safe_move_periodic(amp, period, atime, repeat, ref, require_grasp=False):
+    """비동기 주기 운동 중 충돌과 수거통 이탈을 계속 감시한다."""
+    if _ds.amove_periodic(
+        amp=amp,
+        period=period,
+        atime=atime,
+        repeat=repeat,
+        ref=ref,
+    ) != 0:
+        raise RuntimeError("주기 털기 동작 시작 실패")
+
+    while _ds.check_motion():
+        safety_watch(require_grasp=require_grasp)
+        _ds.wait(0.05)
+
+
 def safe_wait(seconds: float, require_grasp=False):
     start = time.time()
     while time.time() - start < seconds:
@@ -440,36 +460,61 @@ def pick_bin():
     safe_movel(coords["bin_pick_top"], require_grasp=True)
 
 # 음식물 쓰레기 폐기통에 버리는 모션
+# 주기적 shake 모션 함수
+def run_periodic_dump_shake(mode):
+    """dump_tilt 자세를 중심으로 Tool Y축 주기 운동을 수행한다."""
+    if mode == DUMP_MODE_NORMAL:
+        amp = DUMP_NORMAL_PERIODIC_AMP
+        period = DUMP_NORMAL_PERIOD
+    elif mode == DUMP_MODE_STRONG:
+        amp = DUMP_STRONG_PERIODIC_AMP
+        period = DUMP_STRONG_PERIOD
+    else:
+        raise ValueError("dump mode must be 1(normal) or 2(strong)")
+
+    status.set_state(
+        ProcessState.DUMPING,
+        f"periodic shaking {SHAKE_REPEAT_COUNT} cycles",
+    )
+    safe_move_periodic(
+        amp=amp,
+        period=period,
+        atime=PERIODIC_SHAKE_ATIME,
+        repeat=SHAKE_REPEAT_COUNT,
+        ref=_ds.DR_TOOL,
+        require_grasp=True,
+    )
+
 def run_dump_motion(mode: int):
     status.set_state(ProcessState.DUMPING, f"mode={mode}")
     status.publish_mode(mode)
     coords = coordinates()
 
-    if mode == DUMP_MODE_NORMAL:
-        shake_x = coords["shake_weak_x"]
-    elif mode == DUMP_MODE_STRONG:
-        shake_x = coords["shake_strong_x"]
-    else:
+    if mode not in (DUMP_MODE_NORMAL, DUMP_MODE_STRONG):
         raise ValueError("dump mode must be 1(normal) or 2(strong)")
 
     safe_movel(coords["dump_approach"], require_grasp=True)
     safe_movej(coords["dump_tilt"], vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
 
-    # 새로 추가: 모드에 맞는 털기 좌표와 dump_tilt를 빠르게 왕복한다.
-    for idx in range(SHAKE_REPEAT_COUNT):
-        status.set_state(
-            ProcessState.DUMPING,
-            f"shaking {idx + 1}/{SHAKE_REPEAT_COUNT}",
-        )
-        safe_movel(shake_x, vel=SHAKE_VEL, acc=SHAKE_ACC, require_grasp=True)
-        safe_movej(
-            coords["dump_tilt"],
-            vel=SHAKE_VEL,
-            acc=SHAKE_ACC,
-            require_grasp=True,
-        )
+    run_periodic_dump_shake(mode)
 
     safe_movel(coords["dump_approach"], require_grasp=True)
+
+
+def run_periodic_water_shake():
+    """water_out_tilt 자세를 중심으로 Tool X축 주기 운동을 수행한다."""
+    status.set_state(
+        ProcessState.WASHING,
+        f"periodic water shaking {SHAKE_REPEAT_COUNT} cycles",
+    )
+    safe_move_periodic(
+        amp=WATER_PERIODIC_AMP,
+        period=WATER_PERIOD,
+        atime=PERIODIC_SHAKE_ATIME,
+        repeat=SHAKE_REPEAT_COUNT,
+        ref=_ds.DR_TOOL,
+        require_grasp=True,
+    )
 
 # 세척
 def execute_wash():
@@ -487,8 +532,8 @@ def execute_wash():
     safe_movel(coords["way_point"])
     safe_movel(coords["wash_close"])
     gripper_close()
-    _ds.wait(1.5)
     safe_movej(coords["wash_open"], vel=SLOW_VELX, acc=SLOW_ACCX)
+    _ds.wait(1.5)
     safe_movel(coords["wash_close"])
     gripper_open()
 
@@ -511,24 +556,7 @@ def execute_wash():
     safe_movel(coords["water_out_approach"], require_grasp=True)
     safe_movej(coords["water_out_tilt"], vel=SLOW_VELX, acc=SLOW_ACCX, require_grasp=True)
 
-    # 새로 추가: water_out_tilt와 water_out_shake를 빠르게 왕복해 물을 턴다.
-    for idx in range(SHAKE_REPEAT_COUNT):
-        status.set_state(
-            ProcessState.WASHING,
-            f"water shaking {idx + 1}/{SHAKE_REPEAT_COUNT}",
-        )
-        safe_movel(
-            coords["water_out_shake"],
-            vel=SHAKE_VEL,
-            acc=SHAKE_ACC,
-            require_grasp=True,
-        )
-        safe_movej(
-            coords["water_out_tilt"],
-            vel=SHAKE_VEL,
-            acc=SHAKE_ACC,
-            require_grasp=True,
-        )
+    run_periodic_water_shake()
 
     safe_movel(coords["water_out_approach"], require_grasp=True)
 
