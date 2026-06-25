@@ -22,7 +22,8 @@ class ManagerGUI:
         self.window.after(50, self.process_queue)
 
         # 웹소켓 메시지를 큐에 담아 처리하도록 리스너 시작
-        self.api.start_websocket_listener(self.handle_ws_message)
+        # 아래처럼 유저랑 매니저 두 번 웹소켓 호출하고 있음 
+        # self.api.start_websocket_listener(self.handle_ws_message)
     
         self.window.title("관리자 실시간 통합 모니터링 시스템 v1.2")
         
@@ -176,6 +177,12 @@ class ManagerGUI:
                     widget.destroy()
             except Exception as e:
                 print(f"Tab widget destroy soft catch: {e}")
+
+        # ★ 추가: destroy된 위젯에 대한 Python 참조도 같이 끊어줌
+        #   process_queue/update_user_status가 죽은 위젯에 접근하는 것을 방지
+        self.lbl_monitor_status = None
+        # 다른 탭에서도 동적으로 만들어지는 위젯이 있다면 여기에 같이 추가
+        # 예: self.remote_stop_btn = None
 
         # 딕셔너리 라우팅 패턴으로 분기 맵핑
         tab_routers = {
@@ -351,15 +358,18 @@ class ManagerGUI:
     # [SECTION 6] 하드웨어 통신 및 동기화 로직
     # =========================================================================
     def update_user_status(self, status_text):
-        """메인 유저 터미널의 공정 문맥 동기화 및 가시 테마 변환"""
         self.current_user_status_text = status_text
-        if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
-            if any(word in status_text for word in ["이용 중", "처리 중", "구동 중"]):
-                self.lbl_monitor_status.configure(text=status_text, text_color="#1f7ecb")
-            elif any(word in status_text for word in ["오류", "중단", "탈락", "위험"]):
-                self.lbl_monitor_status.configure(text=status_text, text_color="#ff4d6d")
-            else:
-                self.lbl_monitor_status.configure(text=status_text, text_color="#00fa9a")
+        if getattr(self, "lbl_monitor_status", None) is not None:
+            try:
+                if self.lbl_monitor_status.winfo_exists():
+                    if any(word in status_text for word in ["이용 중", "처리 중", "구동 중"]):
+                        self.lbl_monitor_status.configure(text=status_text, text_color="#1f7ecb")
+                    elif any(word in status_text for word in ["오류", "중단", "탈락", "위험"]):
+                        self.lbl_monitor_status.configure(text=status_text, text_color="#ff4d6d")
+                    else:
+                        self.lbl_monitor_status.configure(text=status_text, text_color="#00fa9a")
+            except Exception as e:
+                print(f"update_user_status 위젯 접근 실패 (무시): {e}", flush=True)
 
     def execute_remote_emergency_stop(self):
         """[수정] 관리자 비상 정지 시 백엔드에 즉시 통보"""
