@@ -1,6 +1,5 @@
 from api.api_base import BaseAPI
 
-
 class UserAPI(BaseAPI):
 
     # 작업 시작
@@ -25,6 +24,7 @@ class UserAPI(BaseAPI):
             }
         )
     
+    # 아래 두 가지 함수는 거의 죽은 코드이나 지우면 위험할 것 같아서 그냥 둠
     # 로봇 관절 이동
     def send_hardware_command(
         self,

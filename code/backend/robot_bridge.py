@@ -29,7 +29,7 @@ from asyncio import AbstractEventLoop, Queue, QueueFull
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
-from std_msgs.msg import String  # 실제 로봇 상태 토픽 메시지 타입에 맞게 조정 가능
+from std_msgs.msg import String, Bool  # 실제 로봇 상태 토픽 메시지 타입에 맞게 조정 가능
 
 logger = logging.getLogger(__name__)
 
@@ -40,8 +40,23 @@ TOPIC_PROCESS_STATE = "/robot/process_state"
 TOPIC_MOTION_STATUS = "/robot/motion_status"
 TOPIC_SAFETY_EVENT = "/robot/safety_event"
 TOPIC_COMMAND = "/robot/command"
+TOPIC_GRIPPER_STATUS = "/gripper/status"
 
 SPIN_TIMEOUT_SEC = 0.1
+
+# 상단에 상태 매핑 테이블 추가 (msg가 없을 때를 위한 fallback)
+STATE_KO_MAP = {
+    "IDLE": "대기 중 (사용자 이용 전)",
+    "INIT": "시스템 초기화 중",
+    "READY": "준비 완료",
+    "MOVING": "구동 중 (이동 처리 중)",
+    "DUMPING": "음식물 배출 처리 중",
+    "WASHING": "세척 처리 중",
+    "COMPLETE": "작업 완료",
+    "PAUSED": "일시 중단",
+    "COLLISION": "충돌 위험 감지",
+    "ERROR": "오류 발생",
+}
 
 def _split_colon(raw: str) -> tuple[str, str]:
     """
@@ -110,6 +125,13 @@ class RobotBridgeManager:
             String,
             TOPIC_SAFETY_EVENT,
             self._safety_event_callback,
+            10,
+        )
+
+        self.gripper_status_sub = self.node.create_subscription(
+            Bool,
+            TOPIC_GRIPPER_STATUS,
+            self._gripper_status_callback,
             10,
         )
 
@@ -248,10 +270,11 @@ class RobotBridgeManager:
         print(f"[ROS2 /robot/process_state 수신]: {msg.data}", flush=True)
 
         state, message = _split_colon(msg.data)
+        status_text = message if message else STATE_KO_MAP.get(state, state)
+
         payload = {
             "type": "PROCESS_STATE",
-            "state": state,
-            "message": message,
+            "payload": status_text,   # GUI가 기대하는 순수 문자열
             "timestamp": time.time(),
         }
         self._dispatch(payload)
@@ -289,6 +312,15 @@ class RobotBridgeManager:
             "timestamp": time.time(),
         }
         self._dispatch(payload)
+
+        def _gripper_status_callback(self, msg) -> None:
+            print(f"[ROS2 /gripper/status 수신]: {msg.data}", flush=True)
+            payload = {
+                "type": "GRIPPER_STATUS",
+                "grasped": msg.data,
+                "timestamp": time.time(),
+            }
+            self._dispatch(payload)
 
     # ------------------------------------------------------------------
 

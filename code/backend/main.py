@@ -40,40 +40,56 @@ async def _queue_consumer_loop() -> None:
     (ROS Callback → Queue → [데이터 정제] → 여기 → WebSocket)
     """
     print("Queue consumer 루프 시작.", flush=True)
+
+    # 최신 상태를 누적 유지하는 캐시 (함수 호출 1회 동안 while 루프에서 계속 유지됨)
+    latest_status = {
+        "process_state": "대기 중 (사용자 이용 전)",
+        "task_id": None,
+        "gripper_state": "UNKNOWN",
+        "joints": {"J1": 0.0, "J2": 0.0, "J3": 0.0, "J4": 0.0, "J5": 0.0, "J6": 0.0},
+    }
+
     try:
         while True:
             # 1) ROS 2 브리지 스레드가 적재한 원본 raw 데이터 추출 (dict 형태 가정)
             raw_ros_data = await broadcast_queue.get()
-            
             try:
-                # 2) 나영님이 요구한 표준 HMI 스트리밍 포맷으로 패키징
+                msg_type = raw_ros_data.get("type")
+
+                # 2) 들어온 메시지 타입에 따라 최신 상태 캐시만 갱신 (나머지는 유지)
+                if msg_type == "PROCESS_STATE":
+                    latest_status["process_state"] = raw_ros_data.get("payload", latest_status["process_state"])
+                elif msg_type == "GRIPPER_STATUS":
+                    latest_status["gripper_state"] = "GRASPED" if raw_ros_data.get("grasped") else "OPEN"
+                elif msg_type == "SAFETY_EVENT":
+                    latest_status["last_safety_event"] = {
+                        "error_code": raw_ros_data.get("error_code"),
+                        "error_msg": raw_ros_data.get("error_msg"),
+                    }
+                # MOTION_STATUS, joints 갱신용 토픽이 추가되면 여기에 elif로 계속 확장
+
+                # 3) 현재 GUI(process_queue)가 인식하는 형태로 PROCESS_STATE 브로드캐스트
+                #    -> data.get("type") == "PROCESS_STATE", data.get("payload")가 문자열이어야 함
+                if msg_type == "PROCESS_STATE":
+                    await connection_manager.broadcast({
+                        "type": "PROCESS_STATE",
+                        "payload": latest_status["process_state"],
+                        "timestamp": time.time(),
+                    })
+
+                # 4) 누적 캐시 전체("ROBOT_STATUS")도 함께 브로드캐스트
+                #    -> 지금 GUI는 무시하지만, 추후 관절각/그리퍼 표시 추가 시 바로 쓸 수 있음
                 formatted_payload = {
                     "type": "ROBOT_STATUS",
                     "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                    "payload": {
-                        # 공정 문자열 상태 (예: "구동 중 (공정 처리 중)")
-                        "process_state": raw_ros_data.get("process_state", "대기 중 (사용자 이용 전)"),
-                        "task_id": raw_ros_data.get("task_id", None),
-                        "gripper_state": raw_ros_data.get("gripper_state", "UNKNOWN"),
-                        "joints": {
-                            "J1": raw_ros_data.get("J1", 0.0),
-                            "J2": raw_ros_data.get("J2", 0.0),
-                            "J3": raw_ros_data.get("J3", 0.0),
-                            "J4": raw_ros_data.get("J4", 0.0),
-                            "J5": raw_ros_data.get("J5", 0.0),
-                            "J6": raw_ros_data.get("J6", 0.0)
-                        }
-                    }
+                    "payload": dict(latest_status),
                 }
-
-                # 3) 정제된 딕셔너리를 연결된 모든 웹소켓 클라이언트에게 실시간 브로드캐스트
-                # (FastAPI 웹소켓이 내부적으로 json 직렬화를 처리해줌)
                 await connection_manager.broadcast(formatted_payload)
-                
+
             except Exception:  # noqa: BLE001
                 logger.error("데이터 정제 및 웹소켓 broadcast 중 에러 발생", exc_info=True)
     except asyncio.CancelledError:
-        # 버가 종료될 때 이 루프를 안전하게 터트려(cancel) 자원을 깔끔하게 해제
+        # 서버가 종료될 때 이 루프를 안전하게 취소(cancel)하여 자원을 깔끔하게 해제
         print("Queue consumer 루프 취소됨, 정상 종료.", flush=True)
         raise
 # 데이터 파이프라인의 생명주기(Lifespan)와 결합도로 robot_router가 아닌 main에서 GET /ws/robot/status

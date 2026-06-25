@@ -83,13 +83,14 @@ g_node = None
 gripper_client = None
 _last_grasp_log = None
 
-g_node = None
+
 status = None
 dsr_node = None
 gripper_client = None
 
-# 공정의 상태를 정해진 값으로 관리하기 위한 클래스
-# Enum은 클래스 기본 문법 작성 없이도 이름=값 쌍으로 묶어서 표현 가능하게 함
+# 1. 상태 및 에러 정의서 (Enum 클래스) 
+# 프로그램 전체에서 쓰이는 '단어장' 역할, 오타로 인한 버그를 막기 위해 사용
+# "소문자 idle인가? 대문자 IDLE인가?" 헷갈리지 않도록 통신 규격을 완벽하게 통일해 주는 역할
 class ProcessState(str, Enum):
     IDLE = "IDLE"
     INIT = "INIT"
@@ -117,10 +118,12 @@ def coordinates():
     """실기기에서 측정한 좌표 묶음."""
     return {
         # 초기 대기 및 종료 위치
-        "home": posj(0, 0, 90, 0, 90, 0),
+        "home": posj(0, 0, 90, 0, 90, 0), # start end 
         
         # 배출 위치에서 세척 위치로 이동할 때의 경유점
         "way_point_j": posj(-76.27, 47.33, 97.16, 65.18, 105.46, -56.09),
+
+        # way - home
 
         # 수거통 픽업 위치
         "bin_approach": posj(-43.93, 60.63, 77.03, 55.39, 117.12, -56.03),
@@ -164,7 +167,8 @@ def init_robot_api():
     posx = posx_class
     posj = posj_class
 
-    # 실제 필요한 서비스 리스트
+    # 로봇의 팔다리를 움직이고 감각을 느끼게 해줄 20개의 '신경망(ROS2 Service)'
+    # (실제 필요한 서비스 리스트)
     required_services = [
         _ds._ros2_set_current_tool,
         _ds._ros2_set_current_tcp,
@@ -233,6 +237,7 @@ def init_robot_api():
         raise RuntimeError("Failed to set singularity handling")
 
 # 그리퍼 초기화 함수
+# 그리퍼가 단순히 열리고 닫히기 전, 시스템과 안전하게 통신하기 위한 세팅
 def init_gripper_api():
     global gripper_client
     gripper_client = dsr_node.create_client(SetCommand, "/onrobot/sendCommand")
@@ -244,6 +249,9 @@ def init_gripper_api():
 # ==============================================================================
 # [ROS 상태 출력] - 로봇의 상태 정보 토픽으로 전달(상태 알림 담당 클래스)
 # ==============================================================================
+# 통신 중계소 (StatusBus 클래스)
+# ROS2 시스템과 외부(HMI/웹)를 연결해 주는 핵심 브릿지
+# 역할: 로봇 내부에서 일어나는 일을 /robot/... 이라는 ROS2 토픽(Topic)으로 바깥 세상에 방송
 class StatusBus:
     def __init__(self, node):
         self.node = node  # 전달받은 노드를 클래스 내에서 사용하기 위한 변수 할당
@@ -263,6 +271,7 @@ class StatusBus:
         self.motion_pub.publish(String(data=text)) # motion 발행
         self.node.get_logger().info(text) # text 출력
 
+# 역할: 충돌이 나거나 통을 떨어뜨렸을 때 호출되는 비상 알림 시스템
     def publish_safety(self, code: ErrorCode, msg: str):
         text = f"{code.value}:{msg}"
         self.safety_pub.publish(String(data=text))
@@ -281,15 +290,16 @@ status = None
 # ==============================================================================
 # [DR에 없거나 불안정한 함수 보완] 
 # ==============================================================================
-def stop(mode=None):
+def stop(mode=None): # 역할: 로봇을 멈추게 하는 브레이크
     """DRL stop()과 동일한 목적의 ROS2 MoveStop 래퍼."""
-    stop_mode = _ds.DR_QSTOP if mode is None else mode
+    stop_mode = _ds.DR_QSTOP if mode is None else mode #  비상 정지 버튼의 강도를 정하고, 로봇에게 신호를 보낼 직통 전화선을 연다.
     client = g_node.create_client(
         MoveStop,
         f"/{ROBOT_ID}/dsr_controller2/motion/move_stop",
     )
     if not client.wait_for_service(timeout_sec=1.0):
         return -1
+    # 역할: 브레이크 명령을 전송하고, 로봇이 실제로 멈췄는지 확인
 
     req = MoveStop.Request()
     req.stop_mode = int(stop_mode)
@@ -306,12 +316,15 @@ def send_gripper_command(command: str):
     req.command = command
     future = gripper_client.call_async(req)
     rclpy.spin_until_future_complete(dsr_node, future, timeout_sec=10.0)
-    if not future.done():
+
+    if not future.done():# 만약 10초가 지났는데도 그리퍼가 안 닫히면 에러 띄우고 멈추기. 
         raise RuntimeError(f"RG2 command timed out: {command}")
+
     result = future.result()
     if result is None or not result.success:
         message = result.message if result else "no response"
         raise RuntimeError(f"RG2 command failed ({command}): {message}")
+
 
 def gripper_open():
     send_gripper_command("o")
@@ -332,9 +345,9 @@ def is_grasped() -> bool:
         status.publish_gripper(True)
         return True
 
-    try:
+    try:# 역할: 실제 현장에서 그리퍼에 달린 센서의 전기 신호를 읽어옵니다.
         val = int(_ds.get_digital_input(GRIPPER_INPUT_IDX))
-    except Exception as exc:
+    except Exception as exc: # 역할: 센서 자체가 고장 났거나 선이 끊어졌을 때를 대비한 방어막
         status.publish_gripper(False)
         status.publish_safety(ErrorCode.ERR_PICK, f"gripper_digital_input 읽기 실패: {exc}")
         return False
@@ -355,29 +368,51 @@ def is_grasped() -> bool:
 # ==============================================================================
 # [안전 감시]
 # ==============================================================================
+# 역할: X, Y, Z축으로 들어오는 3차원 힘을 계산하여 하나의 스칼라 값으로 만듬
 def current_force_norm() -> float:
     force = _ds.get_tool_force(_ds.DR_BASE)
     return math.sqrt(force[0] ** 2 + force[1] ** 2 + force[2] ** 2)
 
-
+# 역할: 최후의 비상 정지(Kill Switch) 버튼
+# 행동: 충돌이나 통 떨어짐이 감지되면 이 함수가 호출됨 
+# ➔ 즉시 stop()으로 로봇을 세움 
+# ➔ ERROR 상태를 웹으로 쏨 
+# ➔ 혹시 물을 틀어놨을까 봐 valve_close()로 수도꼭지를 강제로 잠금 
+# ➔ 파이썬 시스템을 완전히 다운시킴. (완벽한 2차 사고 방지)
 def raise_safety_stop(code: ErrorCode, msg: str):
     stop(_ds.DR_QSTOP)
     status.set_state(ProcessState.COLLISION if code == ErrorCode.ERR_COLLISION else ProcessState.ERROR)
     status.publish_safety(code, msg)
 
-
+# safety_watch 역할: 순찰대원
+# current_force_norm이 35N을 넘는지 감시하고, require_grasp=True일 때는 is_grasped()로 통을 쥐고 있는지도 동시에 감시
+# 하나라도 어긋나면 위에서 말한 raise_safety_stop을 누름
 def safety_watch(require_grasp: bool = False):
-    if current_force_norm() > COLLISION_FORCE_N:
-        raise_safety_stop(ErrorCode.ERR_COLLISION, "정격 토크 초과 충돌 감지")
+    
+    # 판단 하나: 합성력이 임계값 초과?
+    force_norm = current_force_norm()
+    if force_norm > COLLISION_FORCE_N:
+        stop(_ds.DR_QSTOP)                          # 즉시 급정지
+        msg = f"외력 감지로 긴급 정지: {force_norm:.1f}N"
+        status.set_state(ProcessState.COLLISION, msg)
+        status.publish_safety(ErrorCode.ERR_COLLISION, msg)
+        raise RuntimeError(msg)  # 런타임 에러가 아니라 다른 식으로 에러 정보를 띄우고 긴급 정지로?
+    
+    # 수거통 이탈 감지 (기존 기능 유지)
     if require_grasp and not is_grasped():
-        raise_safety_stop(ErrorCode.ERR_DROP, "이동 또는 털기 중 수거통 이탈 감지")
+        stop(_ds.DR_QSTOP)
+        msg = "이동 중 수거통 이탈 감지"
+        status.set_state(ProcessState.COLLISION, msg)
+        status.publish_safety(ErrorCode.ERR_DROP, msg)
+        raise RuntimeError(msg)  # 런타임 에러가 아니라 다른 식으로 에러 정보를 띄우고 긴급 정지로?
 
-
+# safe_movej, safe_movel, safe_wait 의 역할: 로봇이 움직이는(amovej, amovel) 동안,
+# 도착할 때까지 멍 때리지 않고 0.05초마다 계속 safety_watch()를 실행시키는 함수 
 def safe_movej(target, vel=VELOCITYJ, acc=ACCJ, require_grasp=False):
     _ds.amovej(target, vel=vel, acc=acc)
     while _ds.check_motion():
         safety_watch(require_grasp=require_grasp)
-        _ds.wait(0.05)
+        _ds.wait(0.01)
 
 
 def safe_movel(target, vel=VELOCITYX, acc=ACCX, require_grasp=False, ref=None, mod=None):
@@ -386,7 +421,7 @@ def safe_movel(target, vel=VELOCITYX, acc=ACCX, require_grasp=False, ref=None, m
     _ds.amovel(target, vel=vel, acc=acc, ref=ref, mod=mod)
     while _ds.check_motion():
         safety_watch(require_grasp=require_grasp)
-        _ds.wait(0.05)
+        _ds.wait(0.01)
 
 
 def safe_movel_relative(target, require_grasp=False, vel=VELOCITYX, acc=ACCX):
@@ -417,7 +452,8 @@ def safe_wait(seconds: float, require_grasp=False):
         safety_watch(require_grasp=require_grasp)
         _ds.wait(0.05)
 
-
+# 수거통을 세척 통에 내려놓을 때 쾅 부딪히지 않고 사람이 손으로 꾹 눌러,
+# 끼우듯 일정한 힘(X축 65N, Z축 10N)으로 부드럽게 밀어 넣습니다.
 def apply_wash_place_force():
     """세척 위치에서 베이스 좌표계 +X와 Z방향 외력으로 수거통을 안착시킨다."""
     compliance_active = False
@@ -455,7 +491,7 @@ def apply_wash_place_force():
 # [공정 단계]
 # ==============================================================================
 
-# 로봇 연결시 시스템 체크
+# 1단계: 준비 및 초기화(check_system_ready)
 def check_system_ready():
     status.set_state(ProcessState.INIT, "시스템 및 센서 체크 중")
     # 좌표 불러오기
@@ -468,13 +504,13 @@ def check_system_ready():
     status.set_state(ProcessState.READY, "초기 대기 위치 및 그리퍼 확인 완료")
     return True
 
-# bin pick위치로 이동
+# 2단계: 수거통 집어 들기 (pick_bin)
 def pick_bin():
     status.set_state(ProcessState.MOVING, "수거통 위치 이동 및 파지")
     coords = coordinates()
 
     safe_movej(coords["way_point_j"])
-    safe_movej(coords["bin_approach"])
+    safe_movej(coords["bin_approach"]) # 수거통 근처 절대좌표(bin_approach)로 다가갑니다.
     safe_movel_relative(coords["bin_pick"])
 
     gripper_close()
@@ -513,6 +549,7 @@ def run_periodic_dump_shake(mode):
         require_grasp=True,
     )
 
+#3 단계: 배출 및 강력 털기 (run_dump_motion)
 def run_dump_motion(mode: int):
     status.set_state(ProcessState.DUMPING, f"mode={mode}")
     status.publish_mode(mode)
@@ -542,15 +579,16 @@ def run_periodic_water_shake():
         require_grasp=True,
     )
 
-# 세척
+# 4단계: 세척 및 오수 배출 (execute_wash)
 def execute_wash():
     status.set_state(ProcessState.WASHING, "세척 위치 이동")
     coords = coordinates()
 
     safe_movej(coords["way_point_j"], require_grasp=True)
-    safe_movej(coords["wash_approach_j"], require_grasp=True)
+    safe_movej(coords["wash_approach_j"], require_grasp=True) #세척기 앞(wash_approach_x)으로 이동
     safe_movel_relative(coords["wash_place"], require_grasp=True)
-    apply_wash_place_force()
+    apply_wash_place_force() # 수거통을 세척 지그(Jig)에 내려놓을 때 쾅 부딪히지 않고 사람이 손으로 꾹 눌러 끼우듯,
+    # 일정한 힘(X축 65N, Z축 10N)으로 부드럽게 밀어 넣습니다.
 
     # 세척 위치에 수거통을 내려놓고 수도 레버를 조작한다.
     gripper_open()
@@ -587,6 +625,7 @@ def execute_wash():
     safe_movej(coords["water_out_approach_j"], require_grasp=True)
 
 
+# 5단계: 원위치 복귀 및 종료 (return_bin_and_complete)
 def return_bin_and_complete():
     coords = coordinates()
 
@@ -603,11 +642,11 @@ def return_bin_and_complete():
 
 def run_process(mode: int):
     try:
-        check_system_ready()
-        pick_bin()
-        run_dump_motion(mode)
-        execute_wash()
-        return_bin_and_complete()
+        check_system_ready() # 1단계: 준비 및 초기화 (check_system_ready)
+        pick_bin() # 2단계: 수거통 집어 들기 (pick_bin)
+        run_dump_motion(mode) # 3단계: 모드별 배출 및 털기 (run_dump_motion)
+        execute_wash() # 4단계: 세척 및 오수 배출 (execute_wash)
+        return_bin_and_complete() # 5단계: 원위치 복귀 및 종료 (return_bin_and_complete)
         return True, "배출 및 세척 완료"
     except Exception as exc:
         status.set_state(ProcessState.ERROR, str(exc))
@@ -632,6 +671,12 @@ import threading
 
 _process_lock = threading.Lock()
 
+
+# ==============================================================================
+# [Command topic entry]
+# ==============================================================================
+
+
 def handle_robot_command(msg: String):
     """FastAPI가 발행한 작업 명령(START, MOVE_JOINT, HARDWARE_CONTROL)을 받아 처리한다."""
     try:
@@ -640,8 +685,9 @@ def handle_robot_command(msg: String):
         g_node.get_logger().error(f"/robot/command JSON 파싱 실패: {exc}")
         return
 
+    # 백엔드 브릿지 매니저에서 꽂아준 command_type 확인
     cmd_type = command.get("command_type") or command.get("command")
-    
+
     # --------------------------------------------------------------------------
     # 케이스 1: [START] 전체 배출/세척 공정 시작
     # --------------------------------------------------------------------------
@@ -720,6 +766,44 @@ def handle_robot_command(msg: String):
             
         except Exception as e:
             g_node.get_logger().error(f"MOVE_JOINT 구동 중 예외 발생: {e}")
+        return
+
+    # --------------------------------------------------------------------------
+    # 케이스 3.5: [EMERGENCY_STOP] 비상정지 — 즉시 처리, 락 상태와 무관하게 동작
+    # --------------------------------------------------------------------------
+    elif cmd_type == "EMERGENCY_STOP":
+        g_node.get_logger().warning("비상정지 명령 수신 — 즉시 정지 수행")
+        try:
+            raise_safety_stop(ErrorCode.ERR_SYSTEM, "사용자 비상정지 요청")
+        except Exception as exc:
+            g_node.get_logger().error(f"비상정지 처리 중 예외 발생: {exc}")
+        finally:
+            if _process_lock.locked():
+                try:
+                    _process_lock.release()
+                except RuntimeError:
+                    pass
+        return
+
+    # --------------------------------------------------------------------------
+    # 케이스 3.6: [RESET] 비상정지/에러 후 안전 경유점을 거쳐 초기 위치로 복귀
+    # --------------------------------------------------------------------------
+    elif cmd_type == "RESET":
+        if _process_lock.locked():
+            g_node.get_logger().warning("공정 진행 중 - RESET 명령 무시됨")
+            return
+
+        g_node.get_logger().info("RESET 명령 수신 — 안전 경유점을 거쳐 초기 위치로 복귀")
+        try:
+            coords = coordinates()
+            safe_movej(coords["way_point_j"])   # 경유점을 먼저 거쳐서
+            safe_movej(coords["home"])          # 초기 위치로 복귀
+            gripper_open()
+            status.set_state(ProcessState.IDLE, "RESET 완료 - 초기 위치 복귀")
+            g_node.get_logger().info("RESET 완료 — IDLE 상태로 복귀")
+        except Exception as exc:
+            g_node.get_logger().error(f"RESET 처리 중 예외 발생: {exc}")
+            status.set_state(ProcessState.ERROR, str(exc))
         return
 
     # --------------------------------------------------------------------------
