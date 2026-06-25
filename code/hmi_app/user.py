@@ -7,7 +7,7 @@ import queue
 
 # 관리자 콘솔 클래스 임포트
 from manager import ManagerGUI
-from api_service import APIService
+from api_user import UserAPI
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -18,7 +18,7 @@ class FoodWasteGUI:
     # ========================================================
     def __init__(self):
         self.root = ctk.CTk()
-        self.api_service = APIService() # API 서비스 초기화
+        self.api_service = UserAPI() # API 서비스 초기화
         self.event_queue = queue.Queue()
         self.api_service.start_websocket_listener(self.handle_ws_message)
 
