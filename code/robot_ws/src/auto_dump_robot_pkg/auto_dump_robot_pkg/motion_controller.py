@@ -4,7 +4,7 @@
 - B-4 요구사항 명세서 REQ-01 ~ REQ-09 반영
 
 실행 예시:
-  ros2 run <pkg> food_waste_dump_robot --ros-args -p operation_mode:=virtual -p dump_mode:=1 -p autostart:=true
+  ros2 run <pkg> food_waste_dump_robot --ros-args -p mode:=virtual -p dump_mode:=1 -p autostart:=true
 
 주의:
   아래 좌표는 반드시 실제 지그/수거통/세척 위치에 맞게 교시 후 수정해야 한다.
@@ -35,18 +35,18 @@ DR_init.__dsr__model = ROBOT_MODEL
 # movel: [선속도 mm/s, 각속도 deg/s], [선가속도 mm/s^2, 각가속도 deg/s^2]
 # 두 명령의 단위가 다르므로 같은 숫자를 쓰지 않고, 회전 속도도 명시한다.
 VELOCITYJ, ACCJ = 30, 30
-VELOCITYX, ACCX = [80, 15], [160, 30]
+VELOCITYX, ACCX = [80, 15], [120, 30] # [80, 15], [160, 30]
 
 # 실제 장착 공구/TCP 설정
 TOOL_NAME = "GripperDA_v1"
-TOOL_WEIGHT_KG = 0.908
-TOOL_CENTER_OF_GRAVITY_MM = [0.0, 0.0, 114.0] # 수정필요
+TOOL_WEIGHT_KG = 0.900
+TOOL_CENTER_OF_GRAVITY_MM = [-13.780, 102.440, 86.330] # 실제값 적용
 TOOL_INERTIA = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
 TCP_NAME = "Tool_Weight1"
 TCP_OFFSET = [0.0, 0.0, 228.0, 0.0, 0.0, 0.0]
 
 # 주기 털기 반복 횟수
-SHAKE_REPEAT_COUNT = 3
+SHAKE_REPEAT_COUNT = 5
 
 # move_periodic 털기 파라미터: [X, Y, Z, Rx, Ry, Rz]
 DUMP_NORMAL_PERIODIC_AMP = [0, 10, 0, 0, 0, 0]
@@ -68,7 +68,7 @@ DESIRED_FORCE_Z = 10.0     # 세척 위치 Z방향 힘[N] - 실기 테스트 후
 COMPLIANCE_X = 300         # X 순응 강성 - 낮을수록 +X 방향 접촉면을 부드럽게 따라감
 COMPLIANCE_Y = 3000        # Y 순응 강성 - Y방향의 불필요한 움직임을 억제
 COMPLIANCE_Z = 2000        # Z 순응 강성 - 낮을수록 부드럽게 눌림
-FORCE_CONTROL_TIME = 8.0   # 목표 외력을 유지하며 안착시킬 시간[s]
+FORCE_CONTROL_TIME = 5.0   # 목표 외력을 유지하며 안착시킬 시간[s]
 
 # 배출 모드: 1=일반 배출, 2=강하게 털기
 DUMP_MODE_NORMAL = 1
@@ -81,6 +81,7 @@ posx = None
 posj = None
 g_node = None
 gripper_client = None
+_last_grasp_log = None
 
 # 공정의 상태를 정해진 값으로 관리하기 위한 클래스
 # Enum은 클래스 기본 문법 작성 없이도 이름=값 쌍으로 묶어서 표현 가능하게 함
@@ -124,18 +125,21 @@ def coordinates():
         "bin_pick_top": posx(0, 130, 0, 0, 0, 0),
         "dump_approach": posx(0, 0, 180, 0, 0, 0),
         "dump_tilt": posx(0, 0, 0, 160, 0, 0),
+        "dump_tilt_back": posx(0, 0, 0, -160, 0, 0),
 
         # 세척 위치
         "wash_approach_x": posx(672.14, 17.01, 87.32, 0.88, 90.95, 90.88),
-        "wash_app_x": posx(699.77, 71.62, 194.76, 82.66, 129.73, 35.61),
-        "wash_place": posx(0, 0, 40, 0, 0, 0),
-        "wash_close": posx(0, 0, 0, 140, 0, 0),
+        "wash_approach_j": posj(0.92, 38.79, 130.96, 180.1, 78.8, -89.2),
+        "wash_place": posx(0, 0, 45, 0, 0, 0),
+        # 수도꼭지 컨트롤
+        "wash_app_j": posj(-16.92, 52.98, 31.28, 50.5, 101.02, -56.09),
         "wash_open": posx(0, 0, 0, -140, 0, 0),
+        "wash_close": posx(0, 0, 0, 140, 0, 0),
         "wash_pick": posx(0, -15, 40, 0, 0, 0),
         "wash_up": posx(0, 15, 0, 0, 0, 0),
         
         # 세척수 배출 위치
-        "water_out_approach": posx(560.48, 49.57, 135.13, 91.02, 89.43, 90.79),
+        "water_out_approach_j": posj(-28.57, 57.89, 69.03, 71.59, 113.57, -39.85),
         "water_out_tilt": posx(0, 0, 0, 140, 0, 0),
     }
 
@@ -171,6 +175,7 @@ def init_robot_api():
         _ds._ros2_get_tool_force,
         _ds._ros2_get_current_posx,
         _ds._ros2_get_current_posj,
+        _ds._ros2_get_digital_input,
         _ds._ros2_get_tool_digital_input,
         _ds._ros2_set_digital_output,
         _ds._ros2_task_compliance_ctrl,
@@ -189,12 +194,12 @@ def init_robot_api():
     g_node.get_logger().info("DSR controller services are ready")
 
     # 노드에 대한 파라미터 선언
-    operation_mode = g_node.declare_parameter(
-        "operation_mode", "virtual"
+    mode = g_node.declare_parameter(
+        "mode", "virtual"
     ).get_parameter_value().string_value
 
     # 실제모드에서는 교시 좌표와 동일한 공구/TCP를 반드시 선택한다.
-    if operation_mode == "real":
+    if mode == "real":
         if _ds.set_tcp(TCP_NAME) != 0:
             if _ds.add_tcp(TCP_NAME, TCP_OFFSET) != 0 or _ds.set_tcp(TCP_NAME) != 0:
                 g_node.get_logger().info(f"TCP 등록/선택 실패: {TCP_NAME}")
@@ -214,10 +219,10 @@ def init_robot_api():
         g_node.get_logger().info(f"Tool/TCP selected: {_ds.get_tool()} / {_ds.get_tcp()}")
     
     # 가상모드면 set_tool, set_tcp 값 확인 넘어감
-    elif operation_mode == "virtual":
+    elif mode == "virtual":
         g_node.get_logger().info("Virtual mode: skip real Tool/TCP registration")
     else:
-        raise RuntimeError("operation_mode must be 'virtual' or 'real'")
+        raise RuntimeError("mode must be 'virtual' or 'real'")
 
     if _ds.set_singularity_handling(_ds.DR_AVOID) != 0:
         raise RuntimeError("Failed to set singularity handling")
@@ -318,19 +323,30 @@ def gripper_close():
 # 파지 확인 함수
 def is_grasped() -> bool:
     """통 파지 확인. virtual 모드에서는 파지 성공으로 간주."""
-    operation_mode = g_node.get_parameter("operation_mode").value
-    if operation_mode == "virtual":
+    global _last_grasp_log
+    mode = g_node.get_parameter("mode").value
+    if mode == "virtual":
         status.publish_gripper(True)
         return True
 
     try:
-        val = _ds.get_tool_digital_input(GRIPPER_INPUT_IDX)
-        grasped = bool(val)
-        status.publish_gripper(grasped)
-        return grasped
+        val = int(_ds.get_digital_input(GRIPPER_INPUT_IDX))
     except Exception as exc:
-        status.publish_safety(ErrorCode.ERR_PICK, f"gripper sensor read failed: {exc}")
+        status.publish_gripper(False)
+        status.publish_safety(ErrorCode.ERR_PICK, f"gripper_digital_input 읽기 실패: {exc}")
         return False
+    # 0 이 ON임
+    grasped = not bool(val)
+    status.publish_gripper(grasped)
+    
+    # 이전 로그와 같으면 출력을 안하고 다를때만 한번 출력
+    log_state = (GRIPPER_INPUT_IDX, val, grasped)
+    if log_state != _last_grasp_log:
+        g_node.get_logger().info(
+            f"Gripper DI grasp check: index={GRIPPER_INPUT_IDX}, value={val}, grasped={grasped}"
+        )
+        _last_grasp_log = log_state
+    return grasped
 
 
 # ==============================================================================
@@ -506,6 +522,7 @@ def run_dump_motion(mode: int):
     safe_movel_relative(coords["dump_tilt"], require_grasp=True)
 
     run_periodic_dump_shake(mode)
+    safe_movel_relative(coords["dump_tilt_back"], require_grasp=True)
 
 def run_periodic_water_shake():
     """water_out_tilt 자세를 중심으로 Tool X축 주기 운동을 수행한다."""
@@ -528,15 +545,15 @@ def execute_wash():
     coords = coordinates()
 
     safe_movej(coords["way_point_j"], require_grasp=True)
-    safe_movel(coords["wash_approach_x"], require_grasp=True)
+    safe_movej(coords["wash_approach_j"], require_grasp=True)
     safe_movel_relative(coords["wash_place"], require_grasp=True)
     apply_wash_place_force()
 
     # 세척 위치에 수거통을 내려놓고 수도 레버를 조작한다.
     gripper_open()
-    safe_movel(coords["wash_approach_x"])
+    safe_movej(coords["wash_approach_j"])
     safe_movej(coords["way_point_j"])
-    safe_movel(coords["wash_app_x"])
+    safe_movej(coords["wash_app_j"])
     gripper_close()
     safe_movel_relative(coords["wash_close"])
     safe_movel_relative(coords["wash_open"])
@@ -544,7 +561,7 @@ def execute_wash():
 
     # 세척이 끝난 수거통을 다시 파지한다.
     safe_movej(coords["way_point_j"])
-    safe_movel(coords["wash_approach_x"])
+    safe_movej(coords["wash_approach_j"])
     safe_movel_relative(coords["wash_pick"])
     gripper_close()
     safe_wait(0.8)
@@ -555,16 +572,16 @@ def execute_wash():
         raise RuntimeError("세척 후 수거통의 위치를 확인해 주세요")
 
     safe_movel_relative(coords["wash_up"], require_grasp=True)
-    safe_movel(coords["wash_approach_x"], require_grasp=True)
+    safe_movej(coords["wash_approach_j"], require_grasp=True)
     safe_movej(coords["way_point_j"], require_grasp=True)
 
     # 오수 배출: 교시된 배출/기울임/흔들기 좌표를 순서대로 사용한다.
-    safe_movel(coords["water_out_approach"], require_grasp=True)
+    safe_movej(coords["water_out_approach_j"], require_grasp=True)
     safe_movel_relative(coords["water_out_tilt"], require_grasp=True)
 
     run_periodic_water_shake()
 
-    safe_movel(coords["water_out_approach"], require_grasp=True)
+    safe_movej(coords["water_out_approach_j"], require_grasp=True)
 
 
 def return_bin_and_complete():
