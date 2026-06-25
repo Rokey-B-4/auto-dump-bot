@@ -15,7 +15,13 @@ import uuid
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from database import init_db, get_db_connection
-from models import TaskStartRequest, ErrorLogRequest
+from models import (
+    TaskStartRequest,
+    ErrorLogRequest,
+    EmergencyStopRequest,
+    ResetRequest,
+    MoveJointRequest,
+)
 from robot_bridge import bridge_manager
 from connection_manager import ConnectionManager
 
@@ -284,3 +290,100 @@ async def get_error_logs(limit: int = 50):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
+        
+# [핵심 API 5] 비상 정지 (/api/robot/emergency-stop)
+@app.post("/api/robot/emergency-stop", summary="비상 정지 명령 (REQ-EMG)")
+# 관리자 GUI의 비상 정지 버튼 클릭 시 호출되는 엔드포인트
+async def emergency_stop(payload: EmergencyStopRequest):
+    """
+    task_id가 있으면 해당 작업의 DB 상태를 EMERGENCY_STOP으로 갱신하고,
+    ROS 단에는 즉시 정지 명령을 발행한다.
+    """
+    logger.info("emergency_stop 호출됨. task_id=%s", payload.task_id)
+    print(f"[API] /api/robot/emergency-stop 호출: task_id={payload.task_id}", flush=True)
+
+    conn = None
+    try:
+        # task_id가 있는 경우에만 DB 상태 갱신 (없으면 전체 비상정지로 간주, DB 변경 없음)
+        if payload.task_id:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE tb_dump_history
+                SET status = 'EMERGENCY_STOP', end_time = (datetime('now', 'localtime'))
+                WHERE task_id = ?
+            """, (payload.task_id,))
+            conn.commit()
+
+        # ROS2 제어 노드에 즉시 정지 명령 발행
+        bridge_manager.publish_command(
+            command_type="EMERGENCY_STOP",
+            task_id=payload.task_id,
+        )
+
+        return {
+            "result": "SUCCESS",
+            "message": "비상 정지 명령이 로봇에 전달되었습니다.",
+            "task_id": payload.task_id,
+        }
+
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logger.error("emergency_stop 처리 중 에러 발생", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+
+# [핵심 API 6] 시스템 리셋 및 인터록 해제 (/api/robot/reset)
+@app.post("/api/robot/reset", summary="시스템 리셋 및 인터록 해제")
+# 에러 조치 완료 후 로봇을 홈 위치로 복귀시키고 인터록을 해제할 때 호출
+async def reset_robot(payload: ResetRequest):
+    """
+    현재는 DB 변경 없이 ROS 단에만 리셋 명령을 발행한다.
+    """
+    logger.info("reset_robot 호출됨.")
+    print("[API] /api/robot/reset 호출", flush=True)
+
+    try:
+        bridge_manager.publish_command(command_type="RESET")
+
+        return {
+            "result": "SUCCESS",
+            "message": "시스템 리셋 명령이 로봇에 전달되었습니다.",
+        }
+
+    except Exception as e:
+        logger.error("reset_robot 처리 중 에러 발생", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# [핵심 API 7] 수동 관절각 제어 (/api/robot/move-joint)
+@app.post("/api/robot/move-joint", summary="6축 관절각 수동 제어 (MoveJ)")
+# 관리자 GUI 슬라이더 조작 후 '관절각 일괄 전송(MoveJ)'을 누르면 호출
+async def move_joint(payload: MoveJointRequest):
+    """
+    프론트가 보낸 6축 관절각 데이터를 ROS의 MoveJ 명령으로 발행한다.
+    """
+    joint_data = payload.model_dump()
+
+    logger.info("move_joint 호출됨. joint_data=%s", joint_data)
+    print(f"[API] /api/robot/move-joint 호출: {joint_data}", flush=True)
+
+    try:
+        bridge_manager.publish_command(
+            command_type="MOVE_JOINT",
+            payload=joint_data,
+        )
+
+        return {
+            "result": "SUCCESS",
+            "message": "관절각 이동 명령이 로봇에 전달되었습니다.",
+            "joint_data": joint_data,
+        }
+
+    except Exception as e:
+        logger.error("move_joint 처리 중 에러 발생", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))

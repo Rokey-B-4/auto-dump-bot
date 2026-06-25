@@ -190,7 +190,14 @@ class RobotBridgeManager:
     # ------------------------------------------------------------------
     # 추가상행 파이프라인 (FastAPI -> ROS) 진입점
     # ------------------------------------------------------------------
-    def publish_command(self, task_id: str, mode_id: int) -> None:
+    def publish_command(
+        self,
+        command_type: str,
+        task_id: str | None = None,
+        mode_id: int | None = None,
+        payload: dict | None = None,
+    ) -> None:
+        
         """
         FastAPI 요청 스레드(uvicorn worker)에서 직접 호출됨.
 
@@ -202,16 +209,20 @@ class RobotBridgeManager:
         """
         if self.command_pub is None or self.node is None:
             logger.error(
-                "publish_command 호출 실패: ROS Bridge가 아직 시작되지 않음."
+                "publish_command 호출 실패: ROS Bridge가 아직 시작되지 않음. (command_type=%s)",
+                command_type,
             )
             return
 
         body = {
-            "command": "START",
+            "command": command_type,
             "task_id": task_id,
             "mode_id": mode_id,
             "timestamp": time.time(),
         }
+        if payload is not None:
+            body["payload"] = payload
+            
         msg = String(data=json.dumps(body, ensure_ascii=False))
 
         self.command_pub.publish(msg)
