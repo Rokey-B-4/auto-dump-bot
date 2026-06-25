@@ -83,6 +83,11 @@ g_node = None
 gripper_client = None
 _last_grasp_log = None
 
+g_node = None
+status = None
+dsr_node = None
+gripper_client = None
+
 # 공정의 상태를 정해진 값으로 관리하기 위한 클래스
 # Enum은 클래스 기본 문법 작성 없이도 이름=값 쌍으로 묶어서 표현 가능하게 함
 class ProcessState(str, Enum):
@@ -230,7 +235,7 @@ def init_robot_api():
 # 그리퍼 초기화 함수
 def init_gripper_api():
     global gripper_client
-    gripper_client = g_node.create_client(SetCommand, "/onrobot/sendCommand")
+    gripper_client = dsr_node.create_client(SetCommand, "/onrobot/sendCommand")
     if not gripper_client.wait_for_service(timeout_sec=10.0):
         raise RuntimeError("RG2 service is not available: /onrobot/sendCommand")
     g_node.get_logger().info("RG2 service is ready")
@@ -300,15 +305,13 @@ def send_gripper_command(command: str):
     req = SetCommand.Request()
     req.command = command
     future = gripper_client.call_async(req)
-    rclpy.spin_until_future_complete(g_node, future, timeout_sec=10.0)
-
+    rclpy.spin_until_future_complete(dsr_node, future, timeout_sec=10.0)
     if not future.done():
         raise RuntimeError(f"RG2 command timed out: {command}")
     result = future.result()
     if result is None or not result.success:
         message = result.message if result else "no response"
         raise RuntimeError(f"RG2 command failed ({command}): {message}")
-
 
 def gripper_open():
     send_gripper_command("o")
@@ -614,10 +617,21 @@ def run_process(mode: int):
             pass
         return False, str(exc)
 
+import threading
 
-# ==============================================================================
-# [Command topic entry] - 수정본
-# ==============================================================================
+_process_lock = threading.Lock()
+
+
+def _run_process_worker(task_id, mode_id):
+    ok, result_message = run_process(mode_id)
+    log = g_node.get_logger().info if ok else g_node.get_logger().error
+    log(f"task_id={task_id}: {result_message}")
+    _process_lock.release()
+
+import threading
+
+_process_lock = threading.Lock()
+
 def handle_robot_command(msg: String):
     """FastAPI가 발행한 작업 명령(START, MOVE_JOINT, HARDWARE_CONTROL)을 받아 처리한다."""
     try:
@@ -626,15 +640,15 @@ def handle_robot_command(msg: String):
         g_node.get_logger().error(f"/robot/command JSON 파싱 실패: {exc}")
         return
 
-    # 백엔드 브릿지 매니저에서 꽂아준 command_type 확인
     cmd_type = command.get("command_type") or command.get("command")
-
+    
     # --------------------------------------------------------------------------
     # 케이스 1: [START] 전체 배출/세척 공정 시작
     # --------------------------------------------------------------------------
     if cmd_type == "START":
         task_id = command.get("task_id")
         mode_id = command.get("mode_id")
+
         if not isinstance(task_id, str) or not task_id.strip():
             g_node.get_logger().error("/robot/command에 유효한 task_id가 없습니다.")
             return
@@ -644,11 +658,17 @@ def handle_robot_command(msg: String):
         if mode_id not in (DUMP_MODE_NORMAL, DUMP_MODE_STRONG):
             g_node.get_logger().error(f"task_id={task_id}: 지원하지 않는 mode_id={mode_id}")
             return
+        if not _process_lock.acquire(blocking=False):
+            g_node.get_logger().warning(f"이미 공정이 진행 중입니다. task_id={task_id} 명령 무시.")
+            return
 
         g_node.get_logger().info(f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}")
-        ok, result_message = run_process(mode_id)
-        log = g_node.get_logger().info if ok else g_node.get_logger().error
-        log(f"task_id={task_id}: {result_message}")
+        try:
+            ok, result_message = run_process(mode_id)
+            log = g_node.get_logger().info if ok else g_node.get_logger().error
+            log(f"task_id={task_id}: {result_message}")
+        finally:
+           _process_lock.release()
         return
 
     # --------------------------------------------------------------------------
@@ -692,7 +712,8 @@ def handle_robot_command(msg: String):
                 float(payload.get("J6", 0.0))
             ]
             g_node.get_logger().info(f"-> 관절각 일괄 이동(MoveJ) 수행: {joint_angles}")
-            
+            safe_movej(joint_angles) 
+            g_node.get_logger().info("-> MoveJ 완료")
             # 원래 ROS 코드에 설계되어 있는 safe_movej 나 로봇 제어 함수에 
             # 해당 관절각 배열(joint_angles)을 던져주시면 됩니다.
             # 예: safe_movej(joint_angles)
@@ -713,28 +734,34 @@ def handle_robot_command(msg: String):
 # ==============================================================================
 # [메인]
 # ==============================================================================
+import threading
+from rclpy.executors import SingleThreadedExecutor
+
 def main(args=None):
-    global g_node, status
+    global g_node, status, dsr_node
 
     rclpy.init(args=args)
-    # 로봇 제어 노드 생성
-    node = rclpy.create_node("food_waste_dump_robot", namespace=ROBOT_ID)
-    # 전역변수로 할당
-    g_node = node
-    # DR_init의 __dsr__node에 할당
-    DR_init.__dsr__node = node
 
-    # 노드에 덤프 모드 파라미터 선언
+    # ---- 노드 1: DSR API 전용 노드 (모션/그리퍼 제어) ----
+    dsr_node = rclpy.create_node("food_waste_dump_robot_dsr", namespace=ROBOT_ID)
+    DR_init.__dsr__node = dsr_node   # DSR API가 내부적으로 쓰는 노드는 이쪽 하나만
+
+    dsr_executor = SingleThreadedExecutor()
+    dsr_executor.add_node(dsr_node)
+    dsr_spin_thread = threading.Thread(target=dsr_executor.spin, daemon=True)
+    dsr_spin_thread.start()
+
+    # ---- 노드 2: 토픽 구독/명령 처리 전용 노드 (메인 스레드) ----
+    node = rclpy.create_node("food_waste_dump_robot", namespace=ROBOT_ID)
+    g_node = node
+
     node.declare_parameter("dump_mode", DUMP_MODE_NORMAL)
-    # 노드에 자동시작 파라미터 선언
     node.declare_parameter("autostart", False)
 
     status = StatusBus(node)
-
     init_robot_api()
     init_gripper_api()
 
-    # FastAPI가 발행하는 JSON 명령에서 task_id와 mode_id를 받아 전체 공정 시작
     node.create_subscription(String, "/robot/command", handle_robot_command, 10)
 
     status.set_state(ProcessState.IDLE, "작업 대기")
@@ -744,13 +771,14 @@ def main(args=None):
         run_process(mode)
 
     try:
-        rclpy.spin(node)
+        rclpy.spin(node)   # 메인 스레드는 명령 노드만 spin
     finally:
         try:
             gripper_open()
         except Exception:
             pass
         node.destroy_node()
+        dsr_node.destroy_node()
         rclpy.shutdown()
 
 
