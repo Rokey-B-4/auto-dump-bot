@@ -7,9 +7,9 @@ data/robot_system.db
 *.db
 
 # ROS2 빌드 및 로그 관련 폴더 (협업 시 각자 빌드해야 함)
-src/robot_ws/build/
-src/robot_ws/install/
-src/robot_ws/log/
+code/robot_ws/build/
+code/robot_ws/install/
+code/robot_ws/log/
 
 # 가상환경 및 OS 임시 파일
 .venv/

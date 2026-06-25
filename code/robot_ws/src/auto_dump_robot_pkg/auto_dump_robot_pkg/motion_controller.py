@@ -616,45 +616,99 @@ def run_process(mode: int):
 
 
 # ==============================================================================
-# [Command topic entry]
+# [Command topic entry] - 수정본
 # ==============================================================================
 def handle_robot_command(msg: String):
-    """FastAPI가 발행한 작업 명령을 받아 전체 공정을 시작한다."""
+    """FastAPI가 발행한 작업 명령(START, MOVE_JOINT, HARDWARE_CONTROL)을 받아 처리한다."""
     try:
         command = json.loads(msg.data)
     except (json.JSONDecodeError, TypeError) as exc:
         g_node.get_logger().error(f"/robot/command JSON 파싱 실패: {exc}")
         return
 
-    if command.get("command") != "START":
+    # 백엔드 브릿지 매니저에서 꽂아준 command_type 확인
+    cmd_type = command.get("command_type") or command.get("command")
+
+    # --------------------------------------------------------------------------
+    # 케이스 1: [START] 전체 배출/세척 공정 시작
+    # --------------------------------------------------------------------------
+    if cmd_type == "START":
+        task_id = command.get("task_id")
+        mode_id = command.get("mode_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            g_node.get_logger().error("/robot/command에 유효한 task_id가 없습니다.")
+            return
+        if isinstance(mode_id, bool) or not isinstance(mode_id, int):
+            g_node.get_logger().error(f"task_id={task_id}: mode_id는 정수여야 합니다: {mode_id!r}")
+            return
+        if mode_id not in (DUMP_MODE_NORMAL, DUMP_MODE_STRONG):
+            g_node.get_logger().error(f"task_id={task_id}: 지원하지 않는 mode_id={mode_id}")
+            return
+
+        g_node.get_logger().info(f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}")
+        ok, result_message = run_process(mode_id)
+        log = g_node.get_logger().info if ok else g_node.get_logger().error
+        log(f"task_id={task_id}: {result_message}")
+        return
+
+    # --------------------------------------------------------------------------
+    # 케이스 2: [HARDWARE_CONTROL] 수동 그리퍼 우회 제어 연동 🔥 (추가)
+    # --------------------------------------------------------------------------
+    elif cmd_type == "HARDWARE_CONTROL":
+        payload = command.get("payload", {})
+        action = payload.get("action")       # "OPEN" 또는 "CLOSE"
+        base_angle = payload.get("base_angle", 0.0)
+
+        g_node.get_logger().info(f"[수동 하드웨어 제어 수신] action={action}, base_angle={base_angle}")
+        
+        # TODO: 필요하다면 base_angle 만큼 관절 1축(J1)을 먼저 회전시키는 로직을 추가할 수 있습니다.
+        # 예: safe_movej_j1_only(base_angle)
+
+        if action == "OPEN":
+            g_node.get_logger().info("-> 로봇 그리퍼 OPEN 구동 수행")
+            gripper_open() # 상단에 정의된 원래 로봇 그리퍼 오픈 함수 호출
+        elif action == "CLOSE":
+            g_node.get_logger().info("-> 로봇 그리퍼 CLOSE 구동 수행")
+            gripper_close() # 상단에 정의된 원래 로봇 그리퍼 클로즈 함수 호출
+        else:
+            g_node.get_logger().warning(f"알 수 없는 하드웨어 액션: {action}")
+        return
+
+    # --------------------------------------------------------------------------
+    # 케이스 3: [MOVE_JOINT] 수동 6축 관절각 슬라이더 제어 🔥 (추가)
+    # --------------------------------------------------------------------------
+    elif cmd_type == "MOVE_JOINT":
+        payload = command.get("payload", {})
+        g_node.get_logger().info(f"[수동 관절 이동 수신] joint_data={payload}")
+        
+        # 백엔드 payload에 담긴 J1~J6 실수값들을 순서대로 추출
+        try:
+            joint_angles = [
+                float(payload.get("J1", 0.0)),
+                float(payload.get("J2", 0.0)),
+                float(payload.get("J3", 0.0)),
+                float(payload.get("J4", 0.0)),
+                float(payload.get("J5", 0.0)),
+                float(payload.get("J6", 0.0))
+            ]
+            g_node.get_logger().info(f"-> 관절각 일괄 이동(MoveJ) 수행: {joint_angles}")
+            
+            # 원래 ROS 코드에 설계되어 있는 safe_movej 나 로봇 제어 함수에 
+            # 해당 관절각 배열(joint_angles)을 던져주시면 됩니다.
+            # 예: safe_movej(joint_angles)
+            
+        except Exception as e:
+            g_node.get_logger().error(f"MOVE_JOINT 구동 중 예외 발생: {e}")
+        return
+
+    # --------------------------------------------------------------------------
+    # 케이스 4: 그 외 정의되지 않은 명령 필터링
+    # --------------------------------------------------------------------------
+    else:
         g_node.get_logger().warning(
-            f"지원하지 않는 command 무시: {command.get('command')!r}"
+            f"지원하지 않는 command_type 무시: {cmd_type!r}"
         )
         return
-
-    task_id = command.get("task_id")
-    mode_id = command.get("mode_id")
-    if not isinstance(task_id, str) or not task_id.strip():
-        g_node.get_logger().error("/robot/command에 유효한 task_id가 없습니다.")
-        return
-    if isinstance(mode_id, bool) or not isinstance(mode_id, int):
-        g_node.get_logger().error(
-            f"task_id={task_id}: mode_id는 정수여야 합니다: {mode_id!r}"
-        )
-        return
-    if mode_id not in (DUMP_MODE_NORMAL, DUMP_MODE_STRONG):
-        g_node.get_logger().error(
-            f"task_id={task_id}: 지원하지 않는 mode_id={mode_id}"
-        )
-        return
-
-    g_node.get_logger().info(
-        f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}"
-    )
-    ok, result_message = run_process(mode_id)
-    log = g_node.get_logger().info if ok else g_node.get_logger().error
-    log(f"task_id={task_id}: {result_message}")
-
 
 # ==============================================================================
 # [메인]
