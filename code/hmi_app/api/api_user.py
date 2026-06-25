@@ -14,6 +14,17 @@ class UserAPI(BaseAPI):
             timeout=10
         )
 
+    # 에러 로그 전송 메서드 누락 대응 (FoodWasteGUI에서 호출하고 있으므로 추가)
+    def send_error_log(self, task_id, error_code, message):
+        return self._post(
+            "/api/error/log",
+            {
+                "task_id": task_id,
+                "error_code": error_code,
+                "message": message
+            }
+        )
+    
     # 로봇 관절 이동
     def send_hardware_command(
         self,

@@ -45,6 +45,25 @@ class ManagerGUI:
         self.window.after(60, lambda: self.show_tab("진행 상태 모니터링"))
         
         self.save_error_log("관리자 실시간 제어 콘솔 가동 완료")
+        # 관리자 창이 강제로 닫힐 때 안전하게 위젯 자원을 소멸시키는 프로토콜 바인딩
+        self.window.protocol("WM_DELETE_WINDOW", self._on_safe_close_window)
+
+    def _on_safe_close_window(self):
+        """창 종료 시 웹소켓 리스너의 UI 큐 참조를 차단하고 안전하게 소멸."""
+        try:
+            # 큐를 비워 메모리 누수 방지
+            while not self.event_queue.empty():
+                try: self.event_queue.get_nowait()
+                except: break
+            
+            # 메인 GUI 인스턴스에 등록된 본인 인스턴스 참조 지우기
+            if self.main_gui and hasattr(self.main_gui, 'manager_console'):
+                self.main_gui.manager_console = None
+                
+            if self.window.winfo_exists():
+                self.window.destroy()
+        except Exception as e:
+            print(f"Manager close safe error: {e}")
 
     # ===========================================================================
     # [SECTION 2] 이벤트 / 웹소켓 처리 
@@ -53,15 +72,19 @@ class ManagerGUI:
         self.event_queue.put(data)
 
     def process_queue(self):
+        if not hasattr(self, "window") or not self.window.winfo_exists():
+            return
         try:
             while not self.event_queue.empty():
                 data = self.event_queue.get_nowait()
                 if data.get("type") == "PROCESS_STATE":
                     new_status = data.get("payload")
-                    self.update_user_status(new_status) # 서버가 시키는 대로만 상태 변경
+                    if self.window.winfo_exists():
+                        self.update_user_status(new_status) # 서버가 시키는 대로만 상태 변경
         except Exception as e:
             print(f"Queue error: {e}")
-        self.window.after(50, self.process_queue)
+        if self.window.winfo_exists():
+            self.window.after(50, self.process_queue)
 
     def _setup_window_geometry(self):
         """화면 해상도 분석 및 관리자 창 위치 우측 최적화 배치"""
@@ -145,7 +168,14 @@ class ManagerGUI:
 
         # 기존 중앙 메인 컨테이너 컴포넌트 완전 제거
         for widget in self.main_content_area.winfo_children():
-            widget.destroy()
+            try:
+                if widget.winfo_exists():
+                    widget.pack_forget()
+                    widget.place_forget()
+                    widget.grid_forget()
+                    widget.destroy()
+            except Exception as e:
+                print(f"Tab widget destroy soft catch: {e}")
 
         # 딕셔너리 라우팅 패턴으로 분기 맵핑
         tab_routers = {
@@ -422,8 +452,21 @@ class ManagerGUI:
 
         # 4. UI 및 로그 피드백 업데이트
         self.save_error_log(f"[MANUAL] MoveJ 관절 명령 전송 완료: {joint_angles}")
-        if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
-            self.lbl_monitor_status.configure(text="🔧 수동 관절 제어 명령 수행 중", text_color="#f1c40f")
+       
+        def safe_ui_update():
+            if not self.window.winfo_exists(): return
+            if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
+                self.lbl_monitor_status.configure(text="🔧 수동 관절 제어 명령 수행 중", text_color="#f1c40f")
+            
+            CTkMessagebox(
+                title="전송 완료",
+                message="✅ 관절각 데이터가 로봇 서버로 일괄 전송되었습니다.",
+                icon="check",
+                option_1="확인",
+                corner_radius=12
+            )
+        
+        self.window.after(10, safe_ui_update)
 
     def control_hardware_action(self, action_name):
         """[수정] 하드코딩된 requests를 제거하고 구조화된 UserAPI를 활용하도록 변경"""

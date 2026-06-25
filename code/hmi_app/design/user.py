@@ -3,9 +3,11 @@ from CTkMessagebox import CTkMessagebox
 import time
 import queue
 
+import requests
+
 # 관리자 콘솔 클래스 임포트
-from hmi_app.design.manager import ManagerGUI
-from hmi_app.api.api_user import UserAPI
+from design.manager import ManagerGUI
+from api.api_user import UserAPI
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -62,11 +64,18 @@ class FoodWasteGUI:
                 payload = data.get("payload")
 
                 if msg_type == "PROCESS_STATE":
+                    if self.emergency_stop:
+                        continue  # 비상 정지 상태에서는 UI 업데이트를 무시
+
                     # 서버가 보내준 단계 이름이 들어오면 UI 업데이트
-                    if hasattr(self, "status") and self.status.winfo_exists():
-                        self.status.configure(text=payload)
+                    if hasattr(self, "status") and self.status and self.status.winfo_exists():
+                        try:
+                            self.status.configure(text=payload)
+                            self.update_step_ui_by_server(payload)
+                        except Exception as e:
+                            print(f"UI 업데이트 오류: {e}")
                         # 서버가 특정 단계 이름을 보내면 그에 맞춰 진행률도 업데이트
-                        self.update_step_ui_by_server(payload)
+                        # self.update_step_ui_by_server(payload)
 
                 elif msg_type == "SAFETY_EVENT":
                     if payload == "EMERGENCY_STOP":
@@ -109,8 +118,17 @@ class FoodWasteGUI:
                 pass
         self._active_after_ids.clear()
 
-        for widget in self.main_container.winfo_children():
-            widget.destroy()
+        # 자식 위젯 순차 파괴 (winfo_exists 검증 강화)
+        if hasattr(self, "main_container") and self.main_container.winfo_exists():
+            for widget in self.main_container.winfo_children():
+                try:
+                    if widget.winfo_exists():
+                        widget.pack_forget()
+                        widget.place_forget()
+                        widget.grid_forget()
+                        widget.destroy()
+                except Exception as e:
+                    print(f"Widget destroy safe catch: {e}")()
 
     def _safe_after(self, ms, command, *args):
         """비상 정지 및 화면 파괴 시 스케줄러 유령 실행을 막는 방탄 스케줄러"""
@@ -252,7 +270,7 @@ class FoodWasteGUI:
             hover_color="#00c77b", 
             text_color="#14171c", 
             corner_radius=12, 
-            command=self.create_process_ui
+            command=self.verify_and_start_process
         )
         next_btn.pack(side="left", padx=12)
 
@@ -264,6 +282,12 @@ class FoodWasteGUI:
             "수거통의 정렬 상태를 다시 확인한 후 확실하게 밀착시켜 주세요!"
         )
         CTkMessagebox(title="⚠️ 수거통 배치 오류 안내", message=error_message, icon="warning", option_1="확인", corner_radius=12, width=500)
+
+    def verify_and_start_process(self):
+        """배치 완료 시 먼저 서버 연결을 시도하고, 성공하거나 통신이 유지될 때만 메인 UI를 빌드합니다."""
+        success = self.start(self.selected_mode)
+        if success:
+            self.create_process_ui()
 
     # ========================================================
     # VIEW 04: 실시간 공정 진행 화면 (Process Monitoring UI)
@@ -366,16 +390,46 @@ class FoodWasteGUI:
     # ========================================================
     def start(self, mode):
         if self.is_running:
-            return
+            return False
+            
         self.is_running = True
-        response = self.api_service.request_task_start(mode)
+        self.emergency_stop = False
         
-        if response and "task_id" in response:
-            self.current_task_id = response["task_id"]
-            # run_process 스레드 실행 코드 삭제 (필요 없음!)
-        else:
+        try:
+            # api_user 내부에서 requests.post를 호출하여 받은 Response 객체 수집
+            response = self.api_service.request_task_start(mode)
+            
+            # 1. 정상적으로 Response 수집 및 HTTP 200번대 안착 성공 케이스
+            if response is not None and (200 <= response.status_code < 300):
+                try:
+                    res_data = response.json()
+                    self.current_task_id = res_data.get("task_id")
+                except Exception:
+                    # 응답 포맷이 다를 경우 디버깅용 임의 가상 ID 매핑
+                    self.current_task_id = f"task_{int(time.time())}"
+                return True
+                
+            # 2. 서버 접속은 되었으나 백엔드 비즈니스 로직 에러 등의 사유인 케이스
+            elif response is not None:
+                print(f"서버 연결은 확인됨. 시스템 응답코드 이상: {response.status_code}")
+                self.current_task_id = f"mock_{int(time.time())}"
+                return True
+                
+            # 3. response가 완벽히 None인 경우 (api_base의 RequestException 캐치 블록 반환값)
+            else:
+                raise requests.RequestException("서버 응답 없음 (None)")
+                
+        except Exception as e:
+            # ❌ 진짜 네트워크가 연결되지 않았거나 통신 오류인 상황에만 에러 출력 처리
+            print(f"서버 물리 연결 실패: {e}")
             self.is_running = False
-            CTkMessagebox(title="통신 오류", message="서버에서 응답이 없습니다.")
+            
+            CTkMessagebox(
+                title="시스템 연결 오류", 
+                message="❌ 로봇 제어 서버와 물리적으로 연결되지 않았습니다.\n네트워크 상태 및 서버 구동 여부를 다시 확인해 주세요.", 
+                icon="cancel"
+            )
+            return False
 
     def run_process(self, mode):
         total = len(self.steps)
@@ -423,19 +477,29 @@ class FoodWasteGUI:
     # ========================================================
     # 6. EMERGENCY LOCK SCREEN SYSTEM (비상 정지 전체 오버레이)
     # ========================================================
+    # ========================================================
+    # 6. EMERGENCY LOCK SCREEN SYSTEM (비상 정지 전체 오버레이)
+    # ========================================================
     def trigger_drop_error(self):
         """센서 단락 혹은 관리자 콘솔 긴급 중단 명령 패킷 수신 시 호출"""
+        # 1. 즉시 상태 플래그를 변경하여 추가적인 run_process나 백그라운드 UI 업데이트 차단
         self.emergency_stop = True
         self.is_running = False
         
         if self.current_task_id:
-            self.api_service.send_error_log(self.current_task_id, "DROP001", "수거통 탈락 감지")
+            try:
+                self.api_service.send_error_log(self.current_task_id, "DROP001", "수거통 탈락 감지")
+            except Exception as e:
+                print(f"에러 로그 전송 실패: {e}")
 
         if self.manager_console:
-            self.manager_console.update_user_status("❌ 원격 강제 중단됨 (인터록 가동)")
+            try:
+                self.manager_console.update_user_status("❌ 원격 강제 중단됨 (인터록 가동)")
+            except Exception:
+                pass
             
-        self.emergency_stop = True    
-        self.show_fatal_error_screen()
+        # 2. 즉시 화면을 띄우지 않고 10ms의 유예를 두어 메인 스레드에서 안전하게 렌더링
+        self.root.after(10, self.show_fatal_error_screen)
 
     def show_fatal_error_screen(self):
         """기존 자식 위젯을 해치지 않고 붉은색 강제 인터록 스크린 레이어를 최상단에 완전 오버레이"""
