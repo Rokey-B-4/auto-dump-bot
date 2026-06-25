@@ -470,12 +470,13 @@ class ManagerGUI:
 
     def control_hardware_action(self, action_name):
         """[수정] 하드코딩된 requests를 제거하고 구조화된 UserAPI를 활용하도록 변경"""
+        print(f"### DEBUG control_hardware_action 호출됨: action_name={action_name!r}", flush=True)
         base_angle = round(self.joint_sliders["J1 (Base)"].get(), 1) if "J1 (Base)" in self.joint_sliders else 0.0
 
         try:
             # 관리자 전용 API 인스턴스에 그리퍼 제어 함수가 없거나 통합을 위해 임시 세팅 시
             # 만약 UserAPI 전용이라면 self.main_gui.api_service를 활용해도 좋습니다.
-            response = self.main_gui.api_service.send_gripper_command(action_name, base_angle)
+            response = self.api.send_gripper_command(action_name, base_angle)
             
             if response is None or response.status_code != 200:
                 raise Exception("서버 응답 오류 또는 연결 실패")
