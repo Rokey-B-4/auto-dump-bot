@@ -4,9 +4,8 @@ from datetime import datetime
 import os
 
 import requests
-from hmi_app.api.api_manager import AdminAPI
+from api.api_manager import AdminAPI
 import queue
-
 
 class ManagerGUI:
     # =========================================================================
@@ -418,74 +417,32 @@ class ManagerGUI:
         
         # 3. 서버 응답 확인 
         if response is None or not response.ok:
-            CTkMessagebox(
-                title="통신 오류",
-                message="❌ 백엔드 서버와 연결할 수 없습니다.",
-                icon="cancel"
-            )
+            CTkMessagebox(title="통신 오류", message="❌ 백엔드 서버와 연결할 수 없습니다.", icon="cancel")
             return
 
-        # 4. 서버에 task_start 요청
-        res = self.api.request_task_start(mode_id=1)
-        
-        # 5. UI 업데이트는 직접 하지 말고 서버 피드백을 기다림
-        # self.status(X) -> self.lbl_monitor_status(O)
+        # 4. UI 및 로그 피드백 업데이트
+        self.save_error_log(f"[MANUAL] MoveJ 관절 명령 전송 완료: {joint_angles}")
         if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
-            self.lbl_monitor_status.configure(text="서버 응답 대기 중...", text_color="#f1c40f")
+            self.lbl_monitor_status.configure(text="🔧 수동 관절 제어 명령 수행 중", text_color="#f1c40f")
 
     def control_hardware_action(self, action_name):
-        base_angle = round(
-            self.joint_sliders["J1 (Base)"].get(),1
-        ) if "J1 (Base)" in self.joint_sliders else 0.0
+        """[수정] 하드코딩된 requests를 제거하고 구조화된 UserAPI를 활용하도록 변경"""
+        base_angle = round(self.joint_sliders["J1 (Base)"].get(), 1) if "J1 (Base)" in self.joint_sliders else 0.0
 
         try:
-            payload={
-                "action":action_name,
-                "base_angle":base_angle
-            }
-            response=requests.post(
-                "http://localhost:8000/api/hardware/control",
-                json=payload,
-                timeout=3
-            )
-            if response.status_code!=200:
-                raise Exception(
-                    f"서버 응답 오류 : {response.status_code}"
-                )
-
-            result=response.json()
+            # 관리자 전용 API 인스턴스에 그리퍼 제어 함수가 없거나 통합을 위해 임시 세팅 시
+            # 만약 UserAPI 전용이라면 self.main_gui.api_service를 활용해도 좋습니다.
+            response = self.main_gui.api_service.send_gripper_command(action_name, base_angle)
+            
+            if response is None or response.status_code != 200:
+                raise Exception("서버 응답 오류 또는 연결 실패")
 
             self.save_error_log(f"[MANUAL] 제어 성공: {action_name}")
-
-            CTkMessagebox(
-                title="수동 제어 성공",
-                message=f"✅ {action_name} 명령 전달 완료",
-                icon="check",
-                corner_radius=12
-            )
-
-        except requests.ConnectionError:
-
-            self.save_error_log(
-                "[ERROR] 백엔드 연결 실패"
-            )
-            CTkMessagebox(
-                title="연결 실패",
-                message="❌ 백엔드 서버와 연결되어 있지 않습니다.",
-                icon="cancel",
-                corner_radius=12
-            )
+            CTkMessagebox(title="수동 제어 성공", message=f"✅ {action_name} 명령 전달 완료", icon="check", corner_radius=12)
 
         except Exception as e:
-            self.save_error_log(
-                f"[ERROR] {str(e)}"
-            )
-            CTkMessagebox(
-                title="명령 실패",
-                message=f"❌ {str(e)}",
-                icon="cancel",
-                corner_radius=12
-            )
+            self.save_error_log(f"[ERROR] {str(e)}")
+            CTkMessagebox(title="명령 실패", message=f"❌ {str(e)}", icon="cancel", corner_radius=12)
 
     def _sync_slider_to_entry(self, value, entry_widget):
         if entry_widget.winfo_exists():
