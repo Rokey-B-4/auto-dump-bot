@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 
 import requests
-from api_manager import AdminAPI
+from hmi_app.api.api_manager import AdminAPI
 import queue
 
 

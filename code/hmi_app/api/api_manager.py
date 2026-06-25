@@ -1,4 +1,4 @@
-from api_base import BaseAPI
+from hmi_app.api.api_base import BaseAPI
 
 
 class AdminAPI(BaseAPI):
