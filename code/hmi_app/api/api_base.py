@@ -5,7 +5,6 @@ import asyncio
 import websockets
 import time
 
-
 class BaseAPI:
     def __init__(
         self,

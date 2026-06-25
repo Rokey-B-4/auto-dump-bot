@@ -1,12 +1,10 @@
 import customtkinter as ctk
 from CTkMessagebox import CTkMessagebox
-import threading
 import time
-import requests
 import queue
 
 # 관리자 콘솔 클래스 임포트
-from hmi_app.views.manager import ManagerGUI
+from hmi_app.design.manager import ManagerGUI
 from hmi_app.api.api_user import UserAPI
 
 ctk.set_appearance_mode("dark")
