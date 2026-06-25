@@ -4,7 +4,7 @@
 # 만약 숫자가 와야 하는데 글자가 오면 알아서 에러(422 Unprocessable Entity)를 튕겨내줌
 # Swagger UI(스웨거 문서)가 이 규격을 바탕으로 자동 완성
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 # 파이썬에서 가장 유명한 데이터 검증 라이브러리인 Pydantic에서 BaseModel이라는 핵심 클래스를 가져옴
 # 우리가 만들 데이터 규격 클래스들이 이 BaseModel을 상속받아(기능을 물려받아) 강력한 데이터 검증 기능을 가질 수 있게함
 
@@ -37,3 +37,35 @@ class ErrorLogRequest(BaseModel):
     error_msg: str
     # 에러의 상세한 내용을 담는 필드이며, 타입은 str(문자열)
     # "정격 토크 초과 충돌 감지"나 "그리퍼 파지력 부족"처럼 엔지니어가 나중에 보고 수리할 수 있도록 사람이 읽을 수 있는 구체적인 실패 원인 문장을 받음
+
+# ------------------------------------------------------------------
+# 아래부터 신규 추가: 로봇 직접 제어용 요청 모델 3종
+# ------------------------------------------------------------------
+
+class EmergencyStopRequest(BaseModel):
+    # "관리자 GUI에서 비상 정지 버튼을 눌렀을 때 보낼 JSON 데이터 포맷이야"라는 뜻
+    task_id: Optional[str] = None
+    # 특정 작업을 정지시키는 거면 그 작업의 task_id를 보내고,
+    # 전체 비상정지(어떤 작업인지 특정 안 함)인 경우엔 안 보내도 되도록 Optional + 기본값 None 처리
+
+
+class ResetRequest(BaseModel):
+    """
+    시스템 리셋 요청 바디.
+    현재는 별도 입력 파라미터가 없지만, 추후 확장(예: 리셋 사유 코드 등)을
+    고려해 빈 모델로 선언해둠. 요청 바디 없이 호출해도 FastAPI가 정상 처리함.
+    """
+    pass
+
+
+class MoveJointRequest(BaseModel):
+    # "관리자 GUI 슬라이더로 6축 관절각을 조정한 뒤 MoveJ 전송을 누르면 보낼 JSON 데이터 포맷이야"라는 뜻
+    J1: float = Field(..., description="Joint 1 각도 (deg)")
+    J2: float = Field(..., description="Joint 2 각도 (deg)")
+    J3: float = Field(..., description="Joint 3 각도 (deg)")
+    J4: float = Field(..., description="Joint 4 각도 (deg)")
+    J5: float = Field(..., description="Joint 5 각도 (deg)")
+    J6: float = Field(..., description="Joint 6 각도 (deg)")
+    # 6개 필드 모두 필수(...)이며 float(실수) 타입.
+    # 두산 협동로봇의 관절 가동범위 제한이 정해지면 Field(..., ge=최소값, le=최대값)으로
+    # 범위 검증을 추가하는 게 안전함 (현재는 타입 검증만 수행)

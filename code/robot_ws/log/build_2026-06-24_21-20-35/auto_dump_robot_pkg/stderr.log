@@ -1,0 +1,1 @@
+error: [Errno 17] File exists: '/home/chaesong/auto-dump-bot/code/robot_ws/build/auto_dump_robot_pkg/resource/auto_dump_robot_pkg' -> '/home/chaesong/auto-dump-bot/code/robot_ws/install/auto_dump_robot_pkg/share/ament_index/resource_index/packages/auto_dump_robot_pkg'
