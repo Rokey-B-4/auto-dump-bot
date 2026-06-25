@@ -63,7 +63,7 @@ GRIPPER_INPUT_IDX = 1         # 실제 파지 확인용 Tool DI 번호. 현장 �
 
 # 외력제어 파라미터
 FORCE_TH = 20.0  # place시 외력감지 Threshold
-DESIRED_FORCE_X = 65.0     # 세척 위치 안착 방향 힘[N] - 베이스 좌표계 +X 방향
+DESIRED_FORCE_X = 0.0     # 세척 위치 안착 방향 힘[N] - 베이스 좌표계 +X 방향
 DESIRED_FORCE_Z = 10.0     # 세척 위치 Z방향 힘[N] - 실기 테스트 후 조정
 COMPLIANCE_X = 300         # X 순응 강성 - 낮을수록 +X 방향 접촉면을 부드럽게 따라감
 COMPLIANCE_Y = 3000        # Y 순응 강성 - Y방향의 불필요한 움직임을 억제

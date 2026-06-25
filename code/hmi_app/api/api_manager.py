@@ -34,7 +34,9 @@ class AdminAPI(BaseAPI):
         """
         # 백엔드 MoveJointRequest가 J1~J6 실수형태를 필수로 요구하므로,
         # J1에는 베이스 각도를 넣고, J6에 그리퍼 액션 플래그(예: 열기=1.0, 닫기=2.0)를 매핑하여 전송합니다.
-        gripper_flag = 1.0 if action_name == "OPEN" else 2.0
+        print(f"### DEBUG send_gripper_command 호출됨: action_name={action_name!r}", flush=True)
+        gripper_flag = 1.0 if "OPEN" in action_name else 2.0
+        print(f"### DEBUG gripper_flag 계산됨: {gripper_flag}", flush=True)
         
         gripper_packet = {
             "J1": float(base_angle),
@@ -44,4 +46,5 @@ class AdminAPI(BaseAPI):
             "J5": 0.0,
             "J6": gripper_flag  # 로봇 제어 노드(ROS) 단에서 J6의 숫자를 보고 그리퍼 작동 판단
         }
+        print(f"### DEBUG 전송 패킷: {gripper_packet}", flush=True)
         return self._post("/api/robot/move-joint", gripper_packet)
