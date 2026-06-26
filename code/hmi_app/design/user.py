@@ -676,39 +676,105 @@ class FoodWasteGUI:
     # 7. RECOVERY SYSTEM (관리자 콘솔 원격 복구 초기화 커넥터)
     # ========================================================
     def reset_system(self):
-        """관리자가 인터록 복구 승인 시 호출되는 1차 세이프 리셋 진입점"""
-        self.emergency_stop = True  
-        self.is_running = False
-        
+        """관리자 원격 복구"""
+        # 현재 상태 백업
+        self.was_running_before_reset = self.is_running
+        # 현재 단계 저장
+        self.resume_step_idx = self._last_step_idx
+        self.emergency_stop = True
+    
         # 관리자 창의 컴포넌트 파괴 스케줄러와 메모리 레이스가 발생하지 않도록 
         # 유예 마진을 150ms로 늘려서 완전히 격리 후 안전 리셋 진입
         self.root.after(150, self._safe_ui_reset)
 
     def _safe_ui_reset(self):
-        """붉은 장막을 걷어내고 메인 작업 선택 UI 뷰로 안전 귀환"""
-        # Tkinter 윈도우 인스턴스가 파괴 중인 상태라면 무시 (안전장치)
+
         if not self.root.winfo_exists():
             return
 
         self.emergency_stop = False
-        self.is_running = False
-        
-        # 붉은 비상 장막 프레임이 존재한다면 메인 컨테이너 조작 전에 '먼저' 안전 소멸
-        if hasattr(self, "error_bg_frame") and self.error_bg_frame.winfo_exists():
+
+        # 붉은 화면 제거
+        if hasattr(self, "error_bg_frame"):
             try:
                 self.error_bg_frame.place_forget()
                 self.error_bg_frame.destroy()
             except:
                 pass
-        # 수평 이동 버튼 참조 해제 (error_bg_frame 파괴로 이미 소멸되지만 명시적 정리)
+
         self.lateral_move_btn = None
-            
-        if self.manager_console:
-            self.manager_console.update_user_status("대기 중")
-            
-        # 프레임 교체 도중 사이드바 클릭 등의 충돌을 막기 위해 after 유예를 한번 더 주고 화면 재빌드
-        self.root.after(50, self.create_mode_selection_ui)
 
+        step = getattr(self, "resume_step_idx", 0)
 
+        # ★ 핵심 정책
+        # 0~1단계 : 초반 → 홈 복귀
+        # 2단계 이후 : 현재 위치 유지 후 재개
+
+        if step <= 1:
+
+            print("[RECOVERY] 초기 위치 복귀 후 재시작")
+
+            # 홈 이동 명령
+            self.api_service.send_hardware_command({
+                "J1":0,
+                "J2":0,
+                "J3":0,
+                "J4":0,
+                "J5":0,
+                "J6":0
+            })
+
+            self.root.after(
+                500,
+                self.create_process_ui
+            )
+
+        else:
+
+            print(f"[RECOVERY] {self.steps[step]} 단계부터 재개")
+
+            self.create_process_ui()
+
+            # 이전 진행상태 복원
+            progress=(step+1)/len(self.steps)
+
+            self.update_ui(
+                step,
+                self.steps[step],
+                progress
+            )
+
+            # 이어서 작업 재개
+            self.resume_process()
+
+    def resume_process(self):
+        """중단된 이후 단계부터 재개"""
+
+        self.is_running = True
+
+        remaining_steps=self.steps[self.resume_step_idx:]
+
+        total=len(self.steps)
+
+        for i,step in enumerate(
+            remaining_steps,
+            start=self.resume_step_idx
+        ):
+
+            if self.emergency_stop:
+                return
+
+            progress=(i+1)/total
+
+            self.update_ui(
+                i,
+                step,
+                progress
+            )
+
+            time.sleep(2)
+
+        self.handle_process_complete()
+        
 if __name__ == "__main__":
     FoodWasteGUI()
