@@ -6,8 +6,8 @@ import queue
 import requests
 
 # 관리자 콘솔 클래스 임포트
-from .manager import ManagerGUI
-from ..api.api_user import UserAPI
+from design.manager import ManagerGUI
+from api.api_user import UserAPI
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -95,17 +95,27 @@ class FoodWasteGUI:
                     if not self.emergency_stop:   # 중복 트리거 방지
                         error_code = data.get("error_code", "")
                         print(f"[WS] SAFETY_EVENT 수신: code={error_code}", flush=True)
-                        # 외력 충돌에 의한 정지이므로 수평이동 활성화(is_collision=True)
-                        self.show_fatal_error_screen(is_collision=True)
+                        
+                        # ★ 핵심 수정 분기: 오직 외력 충돌(ERR_COLLISION)일 때만 수평이동 버튼을 켬
+                        if error_code == "ERR_COLLISION":
+                            self.show_fatal_error_screen(is_collision=True)
+                        else:
+                            # 통 탈락, 파지 실패(ERR_PICK 등) 등의 일반 에러인 경우 수평이동 버튼 비활성화
+                            self.show_fatal_error_screen(is_collision=False)
 
                 # ── ROBOT_STATUS ────────────────────────────────────────────
                 elif msg_type == "ROBOT_STATUS":
                     if not self.emergency_stop:
                         inner = data.get("payload", {})
                         if isinstance(inner, dict) and "last_safety_event" in inner:
-                            print("[WS] ROBOT_STATUS 안 last_safety_event 감지 → 비상 정지", flush=True)
-                            # 하드웨어 위험 상황이므로 수평이동 활성화(is_collision=True)
-                            self.show_fatal_error_screen(is_collision=True)
+                            last_event = inner.get("last_safety_event", "")
+                            print(f"[WS] ROBOT_STATUS 안 last_safety_event 감지: {last_event}", flush=True)
+                            
+                            # ★ 핵심 수정 분기: 토픽 내부 이벤트 사유가 충돌(COLLISION)을 포함하는지 검사
+                            if "COLLISION" in str(last_event).upper() or "충돌" in str(last_event) or "충격" in str(last_event):
+                                self.show_fatal_error_screen(is_collision=True)
+                            else:
+                                self.show_fatal_error_screen(is_collision=False)
 
         except Exception as e:
             print(f"Queue Processing Error: {e}")
@@ -305,22 +315,6 @@ class FoodWasteGUI:
         btn_frame = ctk.CTkFrame(guide_frame, fg_color="transparent")
         btn_frame.pack()
 
-        placement_error_btn = ctk.CTkButton(
-            btn_frame, 
-            text="⚠️ 배치 오류 시뮬레이션", 
-            width=240, 
-            height=55, 
-            font=("맑은 고딕", 15, "bold"), 
-            fg_color="#3d2326", 
-            hover_color="#5c1e24", 
-            text_color="#ff4d6d", 
-            border_color="#ff4d6d", 
-            border_width=1, 
-            corner_radius=12, 
-            command=self.show_placement_error
-        )
-        placement_error_btn.pack(side="left", padx=12)
-
         next_btn = ctk.CTkButton(
             btn_frame, 
             text="배치 완료 (다음)", 
@@ -413,22 +407,6 @@ class FoodWasteGUI:
         # 5. 하단 하드웨어 이벤트 액션 패널
         self.bottom_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         self.bottom_frame.pack(side="bottom", pady=40)
-
-        self.error_btn = ctk.CTkButton(
-            self.bottom_frame, 
-            text="⚠️ 통 탈락 시뮬레이션 발생", 
-            fg_color="#3d2326", 
-            hover_color="#5c1e24", 
-            text_color="#ff4d6d", 
-            border_color="#ff4d6d", 
-            border_width=1, 
-            width=260, 
-            height=45, 
-            font=("맑은 고딕", 13, "bold"), 
-            corner_radius=10, 
-            command=self.trigger_drop_error
-        )
-        self.error_btn.pack()
 
         self.home_btn = ctk.CTkButton(
             self.bottom_frame, 
@@ -663,7 +641,7 @@ class FoodWasteGUI:
         """에러 락업 상황에서 강제로 수평축 모터를 구동시키는 오버라이드 API 트랜잭션"""
         # api_user.py의 send_hardware_command가 요구하는 Pydantic 규격 (J1~J6)
         horizontal_joint_packet = {
-            "J1": 90.0,   # Base 회전축 수평 안전 도피 각도 타겟
+            "J1": 0.0, 
             "J2": 0.0,
             "J3": 0.0,
             "J4": 0.0,
