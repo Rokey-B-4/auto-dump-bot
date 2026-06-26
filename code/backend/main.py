@@ -66,6 +66,7 @@ async def _queue_consumer_loop() -> None:
                     latest_status["last_safety_event"] = {
                         "error_code": raw_ros_data.get("error_code"),
                         "error_msg": raw_ros_data.get("error_msg"),
+                        "timestamp": raw_ros_data.get("timestamp", time.time()),
                     }
                 # MOTION_STATUS, joints 갱신용 토픽이 추가되면 여기에 elif로 계속 확장
 
@@ -76,6 +77,13 @@ async def _queue_consumer_loop() -> None:
                         "type": "PROCESS_STATE",
                         "payload": latest_status["process_state"],
                         "timestamp": time.time(),
+                    })
+                elif msg_type == "SAFETY_EVENT":
+                    await connection_manager.broadcast({
+                        "type": "SAFETY_EVENT",
+                        "error_code": raw_ros_data.get("error_code"),
+                        "error_msg": raw_ros_data.get("error_msg"),
+                        "timestamp": raw_ros_data.get("timestamp", time.time()),
                     })
 
                 # 4) 누적 캐시 전체("ROBOT_STATUS")도 함께 브로드캐스트

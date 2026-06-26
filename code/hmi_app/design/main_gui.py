@@ -1,3 +1,3 @@
-from design.user import FoodWasteGUI
+from .user import FoodWasteGUI
 
 FoodWasteGUI()

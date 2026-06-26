@@ -6,8 +6,8 @@ import queue
 import requests
 
 # 관리자 콘솔 클래스 임포트
-from design.manager import ManagerGUI
-from api.api_user import UserAPI
+from .manager import ManagerGUI
+from hmi_app.api.api_user import UserAPI
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -41,8 +41,11 @@ class FoodWasteGUI:
         # 제어 및 상태 변수
         self.is_running = False
         self.emergency_stop = False
+        self.in_error_state = False
         self.selected_mode = 1
         self._active_after_ids = []  # 실시간 스케줄러 ID 추적 리스트
+        self._process_queue_after_id = None  # 유저 UI 이벤트 큐 루프 after ID
+        self._last_handled_safety_event = None  # ROBOT_STATUS 캐시 반복에 의한 중복 팝업 방지
 
         # 공정 시퀀스 정의
         self.steps = ["통 파지", "배출 위치 이동", "음식물 배출", "세척 중", "초기 위치 복귀", "작업 완료"]
@@ -60,7 +63,7 @@ class FoodWasteGUI:
         
         # 관리자 윈도우 포커싱 최적화 후 루프 진입
         self.root.after(100, lambda: self.manager_console.window.lift())
-        self.root.after(50, self.process_queue)
+        self._restart_process_queue()
         self.root.mainloop()
 
     # ========================================================
@@ -68,6 +71,7 @@ class FoodWasteGUI:
     # ========================================================
     def process_queue(self):
         """백엔드 웹소켓 메시지 큐를 안전하게 소모하여 UI 상태 전이를 처리하는 데몬 루프"""
+        self._process_queue_after_id = None
         # 윈도우 창 자체가 이미 파괴되었다면 즉시 스케줄러 다운
         if not hasattr(self, "root") or not self.root.winfo_exists():
             return
@@ -79,8 +83,8 @@ class FoodWasteGUI:
 
                 # ── PROCESS_STATE ──────────────────────────────────────────
                 if msg_type == "PROCESS_STATE":
-                    if self.emergency_stop:
-                        continue  # 비상 정지 상태에서는 이미 위젯 레이아웃이 바뀌었으므로 무시
+                    if self.emergency_stop or self.in_error_state:
+                        continue  # 비상/오류 상태에서는 완료 상태로 덮어쓰지 않음
 
                     payload = data.get("payload", "")
                     if hasattr(self, "status") and self.status and self.status.winfo_exists():
@@ -94,14 +98,11 @@ class FoodWasteGUI:
                 elif msg_type == "SAFETY_EVENT":
                     if not self.emergency_stop:   # 중복 트리거 방지
                         error_code = data.get("error_code", "")
+                        if not error_code:
+                            continue
                         print(f"[WS] SAFETY_EVENT 수신: code={error_code}", flush=True)
                         
-                        # ★ 핵심 수정 분기: 오직 외력 충돌(ERR_COLLISION)일 때만 수평이동 버튼을 켬
-                        if error_code == "ERR_COLLISION":
-                            self.show_fatal_error_screen(is_collision=True)
-                        else:
-                            # 통 탈락, 파지 실패(ERR_PICK 등) 등의 일반 에러인 경우 수평이동 버튼 비활성화
-                            self.show_fatal_error_screen(is_collision=False)
+                        self._handle_safety_event(error_code, data)
 
                 # ── ROBOT_STATUS ────────────────────────────────────────────
                 elif msg_type == "ROBOT_STATUS":
@@ -111,11 +112,8 @@ class FoodWasteGUI:
                             last_event = inner.get("last_safety_event", "")
                             print(f"[WS] ROBOT_STATUS 안 last_safety_event 감지: {last_event}", flush=True)
                             
-                            # ★ 핵심 수정 분기: 토픽 내부 이벤트 사유가 충돌(COLLISION)을 포함하는지 검사
-                            if "COLLISION" in str(last_event).upper() or "충돌" in str(last_event) or "충격" in str(last_event):
-                                self.show_fatal_error_screen(is_collision=True)
-                            else:
-                                self.show_fatal_error_screen(is_collision=False)
+                            event_code = last_event.get("error_code", "") if isinstance(last_event, dict) else ""
+                            self._handle_safety_event(event_code, last_event)
 
         except Exception as e:
             print(f"Queue Processing Error: {e}")
@@ -126,7 +124,7 @@ class FoodWasteGUI:
         ## 완전히 끊어버려 파괴된 구형 위젯 메모리를 참조하다 튕기는 현상을 완벽 차단합니다.
         ## ---------------------------------------------------------------------
         if self.root.winfo_exists() and not self.emergency_stop:
-            self.root.after(50, self.process_queue)
+            self._process_queue_after_id = self.root.after(50, self.process_queue)
 
     # 서버 메시지에 따라 단계 UI를 업데이트하는 함수
     def update_step_ui_by_server(self, current_step_name):
@@ -154,6 +152,35 @@ class FoodWasteGUI:
 
         if matched_idx == len(self.steps) - 1:
             self.handle_process_complete()
+
+    def _handle_safety_event(self, error_code, event_payload):
+        """안전 이벤트를 종류별로 UI에 반영하고 ROBOT_STATUS 캐시 중복을 차단합니다."""
+        if not error_code:
+            return
+
+        self.in_error_state = True
+
+        event_key = None
+        if isinstance(event_payload, dict):
+            event_key = (
+                event_payload.get("timestamp"),
+                event_payload.get("error_code", error_code),
+                event_payload.get("error_msg", ""),
+            )
+        else:
+            event_key = (None, error_code, str(event_payload))
+
+        if event_key == self._last_handled_safety_event:
+            return
+        self._last_handled_safety_event = event_key
+
+        event_text = str(event_payload)
+        if error_code == "ERR_COLLISION" or "COLLISION" in str(error_code).upper() or "충돌" in event_text or "충격" in event_text:
+            self.show_fatal_error_screen(is_collision=True)
+        elif error_code == "ERR_PICK":
+            self.show_placement_error()
+        else:
+            self.show_fatal_error_screen(is_collision=False)
 
     def handle_ws_message(self, data):
         """웹소켓 스레드에서 호출됨: 데이터를 큐에 넣고 즉시 종료"""
@@ -199,6 +226,14 @@ class FoodWasteGUI:
         self.status = None
         self.progress = None
 
+    def _restart_process_queue(self):
+        """비상정지로 끊긴 유저 UI 이벤트 큐 루프를 중복 없이 재시작합니다."""
+        if not hasattr(self, "root") or not self.root.winfo_exists():
+            return
+        if self.emergency_stop or self._process_queue_after_id is not None:
+            return
+        self._process_queue_after_id = self.root.after(50, self.process_queue)
+
     def _safe_after(self, ms, command, *args):
         """메인 윈도우 인스턴스가 실재할 때만 예약을 안전하게 걸고 추적합니다."""
         if not hasattr(self, "root") or not self.root.winfo_exists():
@@ -214,6 +249,8 @@ class FoodWasteGUI:
     # VIEW 01: 인트로 시작 화면 (Intro UI)
     # ========================================================
     def create_intro_ui(self):
+        self.in_error_state = False
+        self.emergency_stop = False
         self.clear_root()
         
         intro_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
@@ -336,7 +373,13 @@ class FoodWasteGUI:
             "지정된 위치에 수거통이 없거나 올바르게 밀착되지 않았습니다.\n"
             "수거통의 정렬 상태를 다시 확인한 후 확실하게 밀착시켜 주세요!"
         )
-        CTkMessagebox(title="⚠️ 수거통 배치 오류 안내", message=error_message, icon="warning", option_1="확인", corner_radius=12, width=500)
+        msg_box = CTkMessagebox(title="⚠️ 수거통 배치 오류 안내", message=error_message, icon="warning", option_1="확인", corner_radius=12, width=500)
+        response = msg_box.get()
+
+        if response == "확인":
+            self.is_running = False
+            if hasattr(self, "home_btn") and self.home_btn and self.home_btn.winfo_exists():
+                self.home_btn.pack(pady=0)
 
     def verify_and_start_process(self):
         """배치 완료 시 먼저 서버 연결을 시도하고, 성공하거나 통신이 유지될 때만 메인 UI를 빌드합니다."""
@@ -349,7 +392,9 @@ class FoodWasteGUI:
     # =======================================================
     def create_process_ui(self):
         self.clear_root()
+        self.in_error_state = False
         self.step_labels = []
+        self._last_step_idx = -1
         self.is_running = False
         self.emergency_stop = False
 
@@ -502,6 +547,10 @@ class FoodWasteGUI:
                     label.configure(fg_color="#333b4c", text_color="#a8b3c2")
 
     def handle_process_complete(self):
+        if self.emergency_stop or self.in_error_state:
+            if hasattr(self, "home_btn") and self.home_btn and self.home_btn.winfo_exists():
+                self.home_btn.pack(pady=0)
+            return
         if not hasattr(self, "status") or not self.status.winfo_exists():
             return
         self.status.configure(text="모든 작업 완료", text_color="#00fa9a")
@@ -509,10 +558,13 @@ class FoodWasteGUI:
         # 관리자 콘솔 상태도 완료로 갱신 (백엔드 WS가 "작업 완료" 단계명을 보내도 동일하게 반영)
         if self.manager_console:
             self.manager_console.update_user_status("대기 중 (작업 완료)")
-        if self.error_btn.winfo_exists():
+        self.is_running = False
+
+        if hasattr(self, "error_btn") and self.error_btn and self.error_btn.winfo_exists():
             self.error_btn.pack_forget()
-        if self.home_btn.winfo_exists():
-            self.home_btn.pack()
+
+        if hasattr(self, "home_btn") and self.home_btn and self.home_btn.winfo_exists():
+            self.home_btn.pack(pady=0)
 
     # ========================================================
     # 6. EMERGENCY LOCK SCREEN SYSTEM (비상 정지 전체 오버레이)
@@ -556,6 +608,7 @@ class FoodWasteGUI:
             return
 
         # 함수 진입 즉시 플래그를 차단하여 process_queue의 무한 UI 접근 차단
+        self.in_error_state = True
         self.emergency_stop = True
         self.is_running = False
         
@@ -607,6 +660,20 @@ class FoodWasteGUI:
         )
         lbl_guide.pack(pady=20)
 
+        self.error_home_btn = ctk.CTkButton(
+            self.error_bg_frame,
+            text="처음으로 (HOME)",
+            width=260,
+            height=48,
+            font=("맑은 고딕", 15, "bold"),
+            fg_color="#1f7ecb",
+            hover_color="#145a93",
+            text_color="#ffffff",
+            corner_radius=12,
+            command=self._return_to_intro_from_error
+        )
+        self.error_home_btn.pack(pady=(0, 15))
+
         # 4. ★ 수평 이동 버튼: 오직 외력 충돌(is_collision=True)이 발생한 경우만 렌더링되도록 격리
         if is_collision:
             self.lateral_move_btn = ctk.CTkButton(
@@ -633,6 +700,29 @@ class FoodWasteGUI:
             text_color="#a8b3c2"
         )
         lbl_status.pack(side="bottom", pady=25)
+
+    def _return_to_intro_from_error(self):
+        """오류/긴급정지 화면에서 사용자 시작 화면으로 안전하게 복귀합니다."""
+        self.in_error_state = False
+        self.emergency_stop = False
+        self.is_running = False
+        self._last_step_idx = -1
+
+        if hasattr(self, "error_bg_frame") and self.error_bg_frame and self.error_bg_frame.winfo_exists():
+            try:
+                self.error_bg_frame.place_forget()
+                self.error_bg_frame.destroy()
+            except Exception as e:
+                print(f"Error overlay destroy failed: {e}")
+
+        while not self.event_queue.empty():
+            try:
+                self.event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        self._restart_process_queue()
+        self.create_intro_ui()
 
     ## ---------------------------------------------------------------------
     ## CRITICAL FIX: 프론트엔드 UserAPI 매핑 규격에 맞춰 로봇 6축 제어 패킷 릴레이
@@ -694,6 +784,14 @@ class FoodWasteGUI:
 
         self.emergency_stop = False
 
+        while not self.event_queue.empty():
+            try:
+                self.event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        self._restart_process_queue()
+
         # 붉은 화면 제거
         if hasattr(self, "error_bg_frame"):
             try:
@@ -714,16 +812,8 @@ class FoodWasteGUI:
 
             print("[RECOVERY] 초기 위치 복귀 후 재시작")
 
-            # 홈 이동 명령
-            self.api_service.send_hardware_command({
-                "J1":0,
-                "J2":0,
-                "J3":0,
-                "J4":0,
-                "J5":0,
-                "J6":0
-            })
-
+            # 실제 로봇 복구 모션은 백엔드 RESET -> motion_controller가 담당합니다.
+            # HMI에서 별도 MOVE_JOINT를 보내면 안전 경유점 없이 다른 자세로 움직일 수 있습니다.
             self.root.after(
                 500,
                 self.create_process_ui
@@ -744,8 +834,7 @@ class FoodWasteGUI:
                 progress
             )
 
-            # 이어서 작업 재개
-            self.resume_process()
+            # 실제 재개 진행률은 백엔드 웹소켓 상태를 기준으로 갱신합니다.
 
     def resume_process(self):
         """중단된 이후 단계부터 재개"""
