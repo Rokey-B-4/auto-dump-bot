@@ -19,6 +19,9 @@ class ManagerGUI:
 
         self.window = ctk.CTkToplevel(self.main_gui.root)
         self.event_queue = queue.Queue()
+        
+        self._manager_after_ids = []  # 등록된 비동기 스케줄러(after) ID들을 추적하여 파괴 시 취소하기 위함
+        self._ui_lock = False         # 탭 전환(기존 위젯 destroy) 중 백엔드 큐가 위젯을 건드리지 못하게 차단하는 락
         self.window.after(50, self.process_queue)
 
         # 웹소켓 메시지를 큐에 담아 처리하도록 리스너 시작
@@ -49,15 +52,40 @@ class ManagerGUI:
         # 관리자 창이 강제로 닫힐 때 안전하게 위젯 자원을 소멸시키는 프로토콜 바인딩
         self.window.protocol("WM_DELETE_WINDOW", self._on_safe_close_window)
 
+    ## ---------------------------------------------------------------------
+    ## CRITICAL FIX: 안전한 after 스케줄러 등록 및 일괄 취소 메서드 신설
+    ## ---------------------------------------------------------------------
+    def _safe_after(self, ms, command, *args):
+        """창이 존재할 때만 after를 등록하고, 관리자용 after 리스트에 저장합니다."""
+        if not hasattr(self, "window") or not self.window.winfo_exists():
+            return None
+        after_id = self.window.after(ms, command, *args)
+        self._manager_after_ids.append(after_id)
+        return after_id
+
+    def _clear_all_after_events(self):
+        """창 소멸 시, 남아있는 모든 유령 after 이벤트들을 완전 박멸하여 메모리 참조 오류를 막습니다."""
+        for after_id in self._manager_after_ids:
+            try:
+                self.window.after_cancel(after_id)
+            except:
+                pass
+        self._manager_after_ids.clear()
+    ## ---------------------------------------------------------------------
+
     def _on_safe_close_window(self):
-        """창 종료 시 웹소켓 리스너의 UI 큐 참조를 차단하고 안전하게 소멸."""
+        """윈도우 파괴 시 발생할 수 있는 레이스 컨디션을 완전히 제거하는 안전 종료 디스트럭터"""
         try:
-            # 큐를 비워 메모리 누수 방지
+            ## ---------------------------------------------------------------------
+            ## CRITICAL FIX: 파괴 즉시 UI 조작 락을 걸고 스케줄러부터 제거 (가장 중요)
+            ## ---------------------------------------------------------------------
+            self._ui_lock = True
+            self._clear_all_after_events() 
+            
             while not self.event_queue.empty():
                 try: self.event_queue.get_nowait()
                 except: break
             
-            # 메인 GUI 인스턴스에 등록된 본인 인스턴스 참조 지우기
             if self.main_gui and hasattr(self.main_gui, 'manager_console'):
                 self.main_gui.manager_console = None
                 
@@ -73,19 +101,28 @@ class ManagerGUI:
         self.event_queue.put(data)
 
     def process_queue(self):
-        if not hasattr(self, "window") or not self.window.winfo_exists():
+        """내부 메시지 큐 소모 및 UI 안전 상태 전이 동기화 핸들러 (50ms 주기 반복)"""
+        ## ---------------------------------------------------------------------
+        ## CRITICAL FIX: UI 락 상태이거나 창이 폭파 중일 땐 작업을 수행하지 않고 탈출하여 세그폴트 방지
+        ## ---------------------------------------------------------------------
+        if self._ui_lock or not hasattr(self, "window") or not self.window.winfo_exists():
             return
+
         try:
             while not self.event_queue.empty():
                 data = self.event_queue.get_nowait()
                 if data.get("type") == "PROCESS_STATE":
                     new_status = data.get("payload")
-                    if self.window.winfo_exists():
-                        self.update_user_status(new_status) # 서버가 시키는 대로만 상태 변경
+                    if self.window.winfo_exists() and not self._ui_lock:
+                        self.update_user_status(new_status)
         except Exception as e:
-            print(f"Queue error: {e}")
-        if self.window.winfo_exists():
-            self.window.after(50, self.process_queue)
+            print(f"Queue processing soft warning: {e}")
+        
+        ## ---------------------------------------------------------------------
+        ## CRITICAL FIX: 스케줄러 재등록 시 기존 after_id 리스트 관리 매개변수 사용
+        ## ---------------------------------------------------------------------
+        if self.window.winfo_exists() and not self._ui_lock:
+            self._safe_after(50, self.process_queue)
 
     def _setup_window_geometry(self):
         """화면 해상도 분석 및 관리자 창 위치 우측 최적화 배치"""
@@ -158,8 +195,15 @@ class ManagerGUI:
             self.menu_buttons[menu_name] = btn
 
     def show_tab(self, tab_name):
-        """가상 프레임 단위의 화면 전환을 담당하는 뷰 스위칭 라우터"""
-        # 사이드바 버튼 활성화 색상 하이라이트 제어
+        """가상 프레임 단위의 화면 전환을 담당하는 뷰 스위칭 라우터 (안전성 대폭 강화)"""
+        if not self.window.winfo_exists():
+            return
+            
+        ## ---------------------------------------------------------------------
+        ## CRITICAL FIX: 위젯 파괴 작업 도중 백엔드after나 스레드가 위젯을 건드리지 못하게 차단
+        ## ---------------------------------------------------------------------
+        self._ui_lock = True 
+        
         for name, btn in self.menu_buttons.items():
             if btn.winfo_exists():
                 btn.configure(
@@ -167,7 +211,7 @@ class ManagerGUI:
                     text_color="#ffffff" if name == tab_name else "#a8b3c2"
                 )
 
-        # 기존 중앙 메인 컨테이너 컴포넌트 완전 제거
+        # 자식 위젯을 돌며 물리적으로 완전 제거
         for widget in self.main_content_area.winfo_children():
             try:
                 if widget.winfo_exists():
@@ -178,22 +222,27 @@ class ManagerGUI:
             except Exception as e:
                 print(f"Tab widget destroy soft catch: {e}")
 
-        # ★ 추가: destroy된 위젯에 대한 Python 참조도 같이 끊어줌
-        #   process_queue/update_user_status가 죽은 위젯에 접근하는 것을 방지
+        ## ---------------------------------------------------------------------
+        ## CRITICAL FIX: 완전히 파괴된 UI 컴포넌트의 파이썬 바인딩 포인터를 확실하게 날림
+        ## ---------------------------------------------------------------------
         self.lbl_monitor_status = None
-        # 다른 탭에서도 동적으로 만들어지는 위젯이 있다면 여기에 같이 추가
-        # 예: self.remote_stop_btn = None
+        self.remote_stop_btn = None
+        self.lbl_counter = None
 
-        # 딕셔너리 라우팅 패턴으로 분기 맵핑
+        ## ---------------------------------------------------------------------
+        ## CRITICAL FIX: 정리가 모두 끝났으므로 비동기 갱신 허용(락 해제)
+        ## ---------------------------------------------------------------------
+        self._ui_lock = False 
+
         tab_routers = {
             "진행 상태 모니터링": self.view_progress_monitoring,
             "안전 시스템 관리": self.view_safety_management,
             "하드웨어 수동 제어": self.view_hardware_override,
             "시스템 로그 관리": self.view_log_management
         }
+        
         if tab_name in tab_routers:
             tab_routers[tab_name]()
-
 
     # =========================================================================
     # [SECTION 4] 독립 UI 뷰 렌더, 화면 
@@ -358,7 +407,15 @@ class ManagerGUI:
     # [SECTION 6] 하드웨어 통신 및 동기화 로직
     # =========================================================================
     def update_user_status(self, status_text):
+        """실시간 진행 큐로부터 가공된 상태 문자열을 넘겨받아 안전성 보장 하에 UI 전이"""
+        ## ---------------------------------------------------------------------
+        ## CRITICAL FIX: UI 소멸 작업(락 상태) 도중 접근 시도 시, 즉시 무시하여 C-레벨 Crash 사전에 방지
+        ## ---------------------------------------------------------------------
+        if self._ui_lock: 
+            return
+            
         self.current_user_status_text = status_text
+        
         if getattr(self, "lbl_monitor_status", None) is not None:
             try:
                 if self.lbl_monitor_status.winfo_exists():
@@ -369,7 +426,7 @@ class ManagerGUI:
                     else:
                         self.lbl_monitor_status.configure(text=status_text, text_color="#00fa9a")
             except Exception as e:
-                print(f"update_user_status 위젯 접근 실패 (무시): {e}", flush=True)
+                print(f"update_user_status 위젯 접근 실패 무시 (메모리 파괴 레이스): {e}", flush=True)
 
     def execute_remote_emergency_stop(self):
         """[수정] 관리자 비상 정지 시 백엔드에 즉시 통보"""
