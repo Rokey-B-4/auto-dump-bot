@@ -662,10 +662,20 @@ _process_lock = threading.Lock()
 
 
 def _run_process_worker(task_id, mode_id):
-    ok, result_message = run_process(mode_id)
-    log = g_node.get_logger().info if ok else g_node.get_logger().error
-    log(f"task_id={task_id}: {result_message}")
-    _process_lock.release()
+    """run_process를 별도 스레드에서 실행 (handle_robot_command 콜백을 즉시 반환시켜
+    g_node의 spin이 막히지 않게 함 -> EMERGENCY_STOP 등 다른 명령이 즉시 처리 가능해짐)"""
+    try:
+        ok, result_message = run_process(mode_id)
+        log = g_node.get_logger().info if ok else g_node.get_logger().error
+        log(f"task_id={task_id}: {result_message}")
+    except Exception as exc:
+        g_node.get_logger().error(f"task_id={task_id}: run_process 실행 중 예외 발생: {exc}")
+    finally:
+        if _process_lock.locked():
+            try:
+                _process_lock.release()
+            except RuntimeError:
+                pass
 
 import threading
 
@@ -709,12 +719,14 @@ def handle_robot_command(msg: String):
             return
 
         g_node.get_logger().info(f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}")
-        try:
-            ok, result_message = run_process(mode_id)
-            log = g_node.get_logger().info if ok else g_node.get_logger().error
-            log(f"task_id={task_id}: {result_message}")
-        finally:
-           _process_lock.release()
+
+        # ★ 핵심 변경: run_process를 별도 스레드로 던지고 콜백은 즉시 반환
+        #    -> g_node의 spin이 막히지 않아 EMERGENCY_STOP/RESET이 동작 중에도 즉시 처리됨
+        threading.Thread(
+            target=_run_process_worker,
+            args=(task_id, mode_id),
+            daemon=True,
+        ).start()
         return
 
     # --------------------------------------------------------------------------
@@ -819,7 +831,8 @@ def handle_robot_command(msg: String):
 # [메인]
 # ==============================================================================
 import threading
-from rclpy.executors import SingleThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 
 def main(args=None):
     global g_node, status, dsr_node
@@ -846,13 +859,24 @@ def main(args=None):
     init_robot_api()
     init_gripper_api()
 
-    node.create_subscription(String, "/robot/command", handle_robot_command, 10)
+    # 콜백 그룹 분리: START(오래 걸림)와 EMERGENCY_STOP/RESET(즉시 처리)를 분리
+    process_callback_group = MutuallyExclusiveCallbackGroup()
+    command_callback_group = MutuallyExclusiveCallbackGroup()
+
+    node.create_subscription(
+        String, "/robot/command", handle_robot_command, 10,
+        callback_group=process_callback_group   # 일단 모든 명령을 같은 구독에서 받음
+    )
 
     status.set_state(ProcessState.IDLE, "작업 대기")
 
     if node.get_parameter("autostart").value:
         mode = int(node.get_parameter("dump_mode").value)
         run_process(mode)
+
+    # 멀티스레드 executor로 spin -> START가 한 스레드를 차지해도 다른 스레드가 비상정지 처리 가능
+    executor = MultiThreadedExecutor(num_threads=4)
+    executor.add_node(node)
 
     try:
         rclpy.spin(node)   # 메인 스레드는 명령 노드만 spin

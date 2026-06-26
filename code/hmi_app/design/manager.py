@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 
 import requests
-from api.api_manager import AdminAPI
+from ..api.api_manager import AdminAPI
 import queue
 
 class ManagerGUI:
@@ -226,7 +226,7 @@ class ManagerGUI:
             emergency_panel,
             text="🚨 원격 긴급 비상 정지 (Remote Emergency Stop)", height=50, font=("맑은 고딕", 14, "bold"),
             fg_color="#d9534f" if not is_error else "#5c1e24", hover_color="#c9302c", text_color="#ffffff", corner_radius=10,
-            state="normal" if not is_error else "disabled", command=self.execute_remote_emergency_stop
+            state="normal", command=self.execute_remote_emergency_stop
         )
         self.remote_stop_btn.pack(fill="x", padx=20, pady=(0, 20))
 

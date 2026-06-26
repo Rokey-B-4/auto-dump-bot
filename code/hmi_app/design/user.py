@@ -6,8 +6,8 @@ import queue
 import requests
 
 # 관리자 콘솔 클래스 임포트
-from design.manager import ManagerGUI
-from api.api_user import UserAPI
+from .manager import ManagerGUI
+from ..api.api_user import UserAPI
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
