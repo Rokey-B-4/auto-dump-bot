@@ -1145,14 +1145,12 @@ def handle_robot_command(msg: String):
 
         _emergency_stop_requested.clear()
         g_node.get_logger().info(f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}")
-
-        # 기존 START 코드의 run_process 실행/결과 로그/락 해제는 워커에서 수행한다.
-        # 콜백은 즉시 반환시켜 모션 중 EMERGENCY_STOP/RESET 명령을 받을 수 있게 한다.
-        threading.Thread(
-            target=_run_process_worker,
-            args=(task_id, mode_id),
-            daemon=True,
-        ).start()
+        try:
+            ok, result_message = run_process(mode_id)
+            log = g_node.get_logger().info if ok else g_node.get_logger().error
+            log(f"task_id={task_id}: {result_message}")
+        finally:
+            _process_lock.release()
         return
 
     # --------------------------------------------------------------------------
