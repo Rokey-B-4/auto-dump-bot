@@ -8,6 +8,16 @@ from ..api.api_manager import AdminAPI
 import queue
 
 class ManagerGUI:
+    # ★ J3, J5의 초기 각도를 90도로 지정 (스타트 자세)
+    DEFAULT_JOINT_ANGLES = {
+        "J3 (Elbow)": 90,
+        "J5 (Wrist 2)": 90,
+    }
+    DEFAULT_JOINT_ANGLES_SHORT = {
+        "J3": 90.0,
+        "J5": 90.0,
+    }
+
     # =========================================================================
     # [SECTION 1] 초기화 및 창 설정
     # =========================================================================
@@ -345,31 +355,28 @@ class ManagerGUI:
         self.joint_sliders.clear()
         self.joint_entries.clear()
 
-        # 각 관절 슬라이더 및 인풋 폼 한 세트로 바인딩 렌더링
+
         for name, min_val, max_val, desc in joint_specs:
             j_frame = ctk.CTkFrame(scroll_frame, fg_color="#1a1d24", corner_radius=8)
             j_frame.pack(fill="x", padx=10, pady=5)
-
             lbl_title = ctk.CTkLabel(j_frame, text=name, font=("Consolas", 13, "bold"), text_color="#4fa3e3", width=90, anchor="w")
             lbl_title.pack(side="left", padx=(15, 5), pady=8)
-
             lbl_desc = ctk.CTkLabel(j_frame, text=f"({desc})", font=("맑은 고딕", 11), text_color="#7a889b", width=160, anchor="w")
             lbl_desc.pack(side="left", padx=5)
-
             slider = ctk.CTkSlider(j_frame, from_=min_val, to=max_val, number_of_steps=max_val-min_val, progress_color="#1f7ecb")
             slider.pack(side="left", fill="x", expand=True, padx=15)
-            slider.set(0)
-            self.joint_sliders[name] = slider
 
+            initial_value = self.DEFAULT_JOINT_ANGLES.get(name, 0)   # ★ J3, J5는 90, 나머지는 0
+            slider.set(initial_value)
+            print(f"### DEBUG {name}: initial_value={initial_value}, slider.get()={slider.get()}", flush=True)
+            self.joint_sliders[name] = slider
             entry = ctk.CTkEntry(j_frame, width=65, font=("Consolas", 11), justify="center", fg_color="#2d3343", border_color="#3e475e")
             entry.pack(side="left", padx=(5, 15))
-            entry.insert(0, "0.0")
+            entry.insert(0, f"{initial_value:.1f}")   # ★ entry도 동일한 초기값으로 표시
             self.joint_entries[name] = entry
-
             slider.configure(command=lambda val, e=entry: self._sync_slider_to_entry(val, e))
             entry.bind("<Return>", lambda event, s=slider, e=entry, mn=min_val, mx=max_val: self._sync_entry_to_slider(s, e, mn, mx))
-
-        # 액추에이터 및 원점 복구 하단 패널 프레임 구성
+            # 액추에이터 및 원점 복구 하단 패널 프레임 구성
         self._render_hardware_tool_zone(scroll_frame)
 
     # ========================================================================
@@ -457,9 +464,9 @@ class ManagerGUI:
             joint_angles = {
                 "J1": 0.0,
                 "J2": 0.0,
-                "J3": 0.0,
+                "J3": self.DEFAULT_JOINT_ANGLES_SHORT.get("J3", 0.0),
                 "J4": 0.0,
-                "J5": 0.0,
+                "J5": self.DEFAULT_JOINT_ANGLES_SHORT.get("J5", 0.0),
                 "J6": 0.0
             }
             # 서버 전송
@@ -479,12 +486,12 @@ class ManagerGUI:
             # 서버 성공했을 때만 UI 갱신
             for name, slider in self.joint_sliders.items():
                 if slider.winfo_exists():
-                    slider.set(0.0)
-
+                    slider.set(self.DEFAULT_JOINT_ANGLES.get(name, 0.0))   # ★ name으로 J3/J5만 90 적용
             for name, entry in self.joint_entries.items():
                 if entry.winfo_exists():
-                    entry.delete(0,"end")
-                    entry.insert(0,"0.0")
+                    value = self.DEFAULT_JOINT_ANGLES.get(name, 0.0)        # ★ 동일하게 적용
+                    entry.delete(0, "end")
+                    entry.insert(0, f"{value:.1f}")
 
             self.save_error_log("[RECOVERY_ACTION] Home Position 이동 성공")
             CTkMessagebox(
