@@ -12,13 +12,14 @@
 
 import json
 import math
+import threading
 import time
 from enum import Enum
 
 import rclpy
 import DR_init
 from std_msgs.msg import String, Bool, Int32
-from dsr_msgs2.srv import MoveStop
+from dsr_msgs2.srv import GetRobotState, MoveStop
 from onrobot_rg_msgs.srv import SetCommand
 
 ROBOT_ID = "dsr01"
@@ -58,8 +59,27 @@ WATER_PERIOD = 0.8
 PERIODIC_SHAKE_ATIME = 0.2
 
 # 충돌/이탈 감지 기준
-COLLISION_FORCE_N = 30.0      # F/T 센서 외력 임계값[N]
+COLLISION_FORCE_N = 40.0      # F/T 센서 외력 임계값[N]
 GRIPPER_INPUT_IDX = 1         # 실제 파지 확인용 Tool DI 번호. 현장 배선에 맞게 수정
+
+# Doosan 컨트롤러가 system/get_robot_state 서비스로 반환하는 상태값 이름표.
+# ProcessState/RecoveryStage와 달리 로봇 컨트롤러 내부 상태이므로 RESET 전에 별도로 확인한다.
+ROBOT_STATE_NAMES = {
+    0: "INITIALIZING",
+    1: "STANDBY",
+    2: "MOVING",
+    3: "SAFE_OFF",
+    4: "TEACHING",
+    5: "SAFE_STOP",
+    6: "EMERGENCY_STOP",
+    7: "HOMMING",
+    8: "RECOVERY",
+    9: "SAFE_STOP2",
+    10: "SAFE_OFF2",
+    15: "NOT_READY",
+}
+# 아래 상태는 컨트롤러 안전정지/복구/준비불가 상태로 보고 프로그램 복구 모션을 차단한다.
+ROBOT_CONTROLLER_SAFETY_STATES = {3, 5, 6, 8, 9, 10, 15}
 
 # 외력제어 파라미터
 FORCE_TH = 20.0  # place시 외력감지 Threshold
@@ -68,7 +88,7 @@ DESIRED_FORCE_Z = 10.0     # 세척 위치 Z방향 힘[N] - 실기 테스트 후
 COMPLIANCE_X = 300         # X 순응 강성 - 낮을수록 +X 방향 접촉면을 부드럽게 따라감
 COMPLIANCE_Y = 3000        # Y 순응 강성 - Y방향의 불필요한 움직임을 억제
 COMPLIANCE_Z = 2000        # Z 순응 강성 - 낮을수록 부드럽게 눌림
-FORCE_CONTROL_TIME = 5.0   # 목표 외력을 유지하며 안착시킬 시간[s]
+FORCE_CONTROL_TIME = 3.0   # 목표 외력을 유지하며 안착시킬 시간[s]
 
 # 배출 모드: 1=일반 배출, 2=강하게 털기
 DUMP_MODE_NORMAL = 1
@@ -83,9 +103,9 @@ g_node = None
 gripper_client = None
 _last_grasp_log = None
 
-
 status = None
 dsr_node = None
+stop_node = None
 gripper_client = None
 
 # 1. 상태 및 에러 정의서 (Enum 클래스) 
@@ -109,6 +129,77 @@ class ErrorCode(str, Enum):
     ERR_DROP = "ERR_DROP"
     ERR_COLLISION = "ERR_COLLISION"
     ERR_SYSTEM = "ERR_SYSTEM"
+
+# 비상정지때 쓰는 에러 클래스
+class EmergencyStopError(RuntimeError):
+    """사용자 비상정지 또는 안전 감지로 공정을 즉시 중단할 때 사용한다."""
+
+# 비상정지/충돌 후 RESET이 어떤 후동작을 해야 하는지 판단하기 위한 공정 체크포인트.
+# 실제 로봇 상태가 아니라 프로그램이 마지막으로 통과한 안전한 의미 단위를 저장한다.
+class RecoveryStage(str, Enum):
+    IDLE = "IDLE"
+    READY = "READY"
+    BIN_GRASPED = "BIN_GRASPED"
+    DUMP_STARTED = "DUMP_STARTED"
+    WASTE_DUMPED = "WASTE_DUMPED"
+    # 세척 지그 주변에서는 바로 way_point_j로 빠지면 구조물과 부딪힐 수 있어
+    # 접근장소(wash_approach_j)를 기준으로 복구 경로를 나눈다.
+    WASH_APPROACHING = "WASH_APPROACHING"
+    WASH_APPROACH_REACHED = "WASH_APPROACH_REACHED"
+    WASH_PLACING = "WASH_PLACING"
+    WASH_JIG_PLACED = "WASH_JIG_PLACED"
+    WASH_JIG_RELEASED = "WASH_JIG_RELEASED"
+    WASH_JIG_LEAVING = "WASH_JIG_LEAVING"
+    WASH_JIG_LEFT = "WASH_JIG_LEFT"
+    WASH_TO_WAYPOINT = "WASH_TO_WAYPOINT"
+    WASH_WAYPOINT_REACHED = "WASH_WAYPOINT_REACHED"
+    WATER_VALVE_GRASPED = "WATER_VALVE_GRASPED"
+    WATER_VALVE_TURNED = "WATER_VALVE_TURNED"
+    WATER_IN_BIN = "WATER_IN_BIN"
+    WASH_BIN_GRASPED = "WASH_BIN_GRASPED"
+    WASH_BIN_LIFTED = "WASH_BIN_LIFTED"
+    WASH_BIN_AT_APPROACH = "WASH_BIN_AT_APPROACH"
+    WASH_BIN_LEFT = "WASH_BIN_LEFT"
+    WATER_DUMPING = "WATER_DUMPING"
+    WATER_DUMPED = "WATER_DUMPED"
+    RETURNING_BIN = "RETURNING_BIN"
+    BIN_RETURNED = "BIN_RETURNED"
+    COMPLETE = "COMPLETE"
+
+
+_RECOVERY_STAGE_ORDER = {
+    stage: index for index, stage in enumerate(RecoveryStage)
+}
+
+_stage_lock = threading.Lock()
+_stop_call_lock = threading.Lock()
+_emergency_command_lock = threading.Lock()
+_process_stage = RecoveryStage.IDLE
+_emergency_stop_requested = threading.Event()
+
+# 복구단계 설정 함수
+def set_recovery_stage(stage: RecoveryStage, msg: str = ""):
+    global _process_stage
+    with _stage_lock:
+        _process_stage = stage
+    if msg:
+        g_node.get_logger().info(f"복구 체크포인트: {stage.value} - {msg}")
+
+# 현재 복구단계 가져오는 함수
+def get_recovery_stage() -> RecoveryStage:
+    with _stage_lock:
+        return _process_stage
+
+
+def recovery_stage_at_least(stage: RecoveryStage, threshold: RecoveryStage) -> bool:
+    return _RECOVERY_STAGE_ORDER[stage] >= _RECOVERY_STAGE_ORDER[threshold]
+
+
+def emergency_stop_if_requested():
+    # START 공정 스레드 안의 모든 safe_* 루프가 이 플래그를 보고 즉시 탈출한다.
+    if _emergency_stop_requested.is_set():
+        request_motion_stop("사용자 비상정지 요청")
+        raise EmergencyStopError("사용자 비상정지 요청")
 
 
 # ==============================================================================
@@ -293,20 +384,91 @@ status = None
 def stop(mode=None): # 역할: 로봇을 멈추게 하는 브레이크
     """DRL stop()과 동일한 목적의 ROS2 MoveStop 래퍼."""
     stop_mode = _ds.DR_QSTOP if mode is None else mode #  비상 정지 버튼의 강도를 정하고, 로봇에게 신호를 보낼 직통 전화선을 연다.
-    client = g_node.create_client(
-        MoveStop,
-        f"/{ROBOT_ID}/dsr_controller2/motion/move_stop",
-    )
-    if not client.wait_for_service(timeout_sec=1.0):
-        return -1
-    # 역할: 브레이크 명령을 전송하고, 로봇이 실제로 멈췄는지 확인
+    node = stop_node if stop_node is not None else dsr_node
 
-    req = MoveStop.Request()
-    req.stop_mode = int(stop_mode)
-    future = client.call_async(req)
-    rclpy.spin_until_future_complete(g_node, future, timeout_sec=2.0)
-    result = future.result() if future.done() else None
-    return 0 if result and result.success else -1
+    with _stop_call_lock:
+        client = node.create_client(
+            MoveStop,
+            f"/{ROBOT_ID}/dsr_controller2/motion/move_stop",
+        )
+        if not client.wait_for_service(timeout_sec=0.3):
+            return -1
+        # 역할: 브레이크 명령을 전송하고, 로봇이 실제로 멈췄는지 확인
+
+        req = MoveStop.Request()
+        req.stop_mode = int(stop_mode)
+        future = client.call_async(req)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=0.8)
+        result = future.result() if future.done() else None
+        return 0 if result and result.success else -1
+
+
+def request_motion_stop(reason: str = ""):
+    """현재 모션에 정지 요청을 보낸다. QSTOP 실패 시 QSTOP_STO까지 한 번 더 시도한다."""
+    # stop_node를 통해 호출되어 DSR API용 dsr_node의 spin과 충돌할 가능성을 줄인다.
+    if reason:
+        g_node.get_logger().warning(f"모션 정지 요청: {reason}")
+
+    try:
+        if stop(_ds.DR_QSTOP) == 0:
+            return
+    except Exception as exc:
+        g_node.get_logger().error(f"DR_QSTOP 실패: {exc}")
+
+    try:
+        stop(_ds.DR_QSTOP_STO)
+    except Exception as exc:
+        g_node.get_logger().error(f"DR_QSTOP_STO 실패: {exc}")
+
+
+def get_controller_robot_state():
+    """Doosan 컨트롤러의 현재 robot_state를 조회한다. 조회 실패 시 None을 반환한다."""
+    node = stop_node if stop_node is not None else dsr_node
+    if node is None:
+        return None
+
+    client = node.create_client(
+        GetRobotState,
+        f"/{ROBOT_ID}/dsr_controller2/system/get_robot_state",
+    )
+    if not client.wait_for_service(timeout_sec=0.3):
+        g_node.get_logger().warning("로봇 상태 조회 서비스가 준비되지 않았습니다: get_robot_state")
+        return None
+
+    future = client.call_async(GetRobotState.Request())
+    rclpy.spin_until_future_complete(node, future, timeout_sec=0.8)
+    if not future.done():
+        g_node.get_logger().warning("로봇 상태 조회 시간 초과: get_robot_state")
+        return None
+
+    result = future.result()
+    if result is None or not result.success:
+        g_node.get_logger().warning("로봇 상태 조회 실패: get_robot_state")
+        return None
+    return int(result.robot_state)
+
+
+def block_reset_if_controller_safety_stop() -> bool:
+    """컨트롤러 자체 안전정지 상태이면 RESET 복구 모션을 차단한다."""
+    # 로봇 자체 SAFE_STOP/EMERGENCY_STOP 상태에서는 movej/movel 명령이 먹지 않을 수 있으므로
+    # 티치펜던트/컨트롤러에서 안전 해제가 끝나기 전까지 소프트웨어 복구를 시작하지 않는다.
+    robot_state = get_controller_robot_state()
+    if robot_state is None:
+        return False
+
+    state_name = ROBOT_STATE_NAMES.get(robot_state, f"UNKNOWN({robot_state})")
+    g_node.get_logger().info(f"RESET 전 로봇 컨트롤러 상태 확인: {robot_state} {state_name}")
+
+    if robot_state not in ROBOT_CONTROLLER_SAFETY_STATES:
+        return False
+
+    msg = (
+        f"ROBOT_SAFETY_STOP:{state_name} - "
+        "로봇 컨트롤러 안전정지 상태입니다. 현장 안전 확인 후 컨트롤러/티치펜던트에서 안전정지를 해제하세요."
+    )
+    status.set_state(ProcessState.ERROR, msg)
+    status.publish_safety(ErrorCode.ERR_SYSTEM, msg)
+    return True
 
 # ==============================================================================
 # [그리퍼 / 센서 / 밸브]
@@ -373,42 +535,42 @@ def current_force_norm() -> float:
     force = _ds.get_tool_force(_ds.DR_BASE)
     return math.sqrt(force[0] ** 2 + force[1] ** 2 + force[2] ** 2)
 
-# 역할: 최후의 비상 정지(Kill Switch) 버튼
-# 행동: 충돌이나 통 떨어짐이 감지되면 이 함수가 호출됨 
-# ➔ 즉시 stop()으로 로봇을 세움 
-# ➔ ERROR 상태를 웹으로 쏨 
-# ➔ 혹시 물을 틀어놨을까 봐 valve_close()로 수도꼭지를 강제로 잠금 
-# ➔ 파이썬 시스템을 완전히 다운시킴. (완벽한 2차 사고 방지)
-def raise_safety_stop(code: ErrorCode, msg: str):
-    stop(_ds.DR_QSTOP)
-    status.set_state(ProcessState.COLLISION if code == ErrorCode.ERR_COLLISION else ProcessState.ERROR)
+# 사용자 비상정지, 프로그램 외력 감지, 수거통 이탈 감지를 모두 같은 순서로 처리한다.
+# 정지 플래그 ON -> 컨트롤러 stop 요청 -> 상태/안전 이벤트 발행 -> 공정 루프 예외 탈출.
+def trigger_safety_stop(code: ErrorCode, msg: str, state: ProcessState = None):
+    """사용자 비상정지와 센서 안전정지를 같은 순서로 처리한다."""
+    _emergency_stop_requested.set()
+    request_motion_stop(msg)
+
+    if state is None:
+        state = ProcessState.COLLISION if code == ErrorCode.ERR_COLLISION else ProcessState.ERROR
+    status.set_state(state, msg)
     status.publish_safety(code, msg)
+
 
 # safety_watch 역할: 순찰대원
 # current_force_norm이 35N을 넘는지 감시하고, require_grasp=True일 때는 is_grasped()로 통을 쥐고 있는지도 동시에 감시
-# 하나라도 어긋나면 위에서 말한 raise_safety_stop을 누름
+# 하나라도 어긋나면 trigger_safety_stop으로 사용자 비상정지와 같은 정지 절차를 수행한다.
 def safety_watch(require_grasp: bool = False):
+    emergency_stop_if_requested()
     
     # 판단 하나: 합성력이 임계값 초과?
     force_norm = current_force_norm()
     if force_norm > COLLISION_FORCE_N:
-        stop(_ds.DR_QSTOP)                          # 즉시 급정지
         msg = f"외력 감지로 긴급 정지: {force_norm:.1f}N"
-        status.set_state(ProcessState.COLLISION, msg)
-        status.publish_safety(ErrorCode.ERR_COLLISION, msg)
-        raise RuntimeError(msg)  # 런타임 에러가 아니라 다른 식으로 에러 정보를 띄우고 긴급 정지로?
+        trigger_safety_stop(ErrorCode.ERR_COLLISION, msg, ProcessState.COLLISION)
+        raise EmergencyStopError(msg)
     
     # 수거통 이탈 감지 (기존 기능 유지)
     if require_grasp and not is_grasped():
-        stop(_ds.DR_QSTOP)
         msg = "이동 중 수거통 이탈 감지"
-        status.set_state(ProcessState.COLLISION, msg)
-        status.publish_safety(ErrorCode.ERR_DROP, msg)
-        raise RuntimeError(msg)  # 런타임 에러가 아니라 다른 식으로 에러 정보를 띄우고 긴급 정지로?
+        trigger_safety_stop(ErrorCode.ERR_DROP, msg, ProcessState.COLLISION)
+        raise EmergencyStopError(msg)
 
 # safe_movej, safe_movel, safe_wait 의 역할: 로봇이 움직이는(amovej, amovel) 동안,
-# 도착할 때까지 멍 때리지 않고 0.05초마다 계속 safety_watch()를 실행시키는 함수 
+# 도착할 때까지 블로킹하지 않고 짧은 주기로 safety_watch()를 실행하는 함수
 def safe_movej(target, vel=VELOCITYJ, acc=ACCJ, require_grasp=False):
+    emergency_stop_if_requested()
     _ds.amovej(target, vel=vel, acc=acc)
     while _ds.check_motion():
         safety_watch(require_grasp=require_grasp)
@@ -416,6 +578,7 @@ def safe_movej(target, vel=VELOCITYJ, acc=ACCJ, require_grasp=False):
 
 
 def safe_movel(target, vel=VELOCITYX, acc=ACCX, require_grasp=False, ref=None, mod=None):
+    emergency_stop_if_requested()
     ref = _ds.DR_BASE if ref is None else ref
     mod = _ds.DR_MV_MOD_ABS if mod is None else mod
     _ds.amovel(target, vel=vel, acc=acc, ref=ref, mod=mod)
@@ -432,6 +595,7 @@ def safe_movel_relative(target, require_grasp=False, vel=VELOCITYX, acc=ACCX):
 
 def safe_move_periodic(amp, period, atime, repeat, ref, require_grasp=False):
     """비동기 주기 운동 중 충돌과 수거통 이탈을 계속 감시한다."""
+    emergency_stop_if_requested()
     if _ds.amove_periodic(
         amp=amp,
         period=period,
@@ -443,7 +607,7 @@ def safe_move_periodic(amp, period, atime, repeat, ref, require_grasp=False):
 
     while _ds.check_motion():
         safety_watch(require_grasp=require_grasp)
-        _ds.wait(0.05)
+        _ds.wait(0.01)
 
 
 def safe_wait(seconds: float, require_grasp=False):
@@ -493,6 +657,7 @@ def apply_wash_place_force():
 
 # 1단계: 준비 및 초기화(check_system_ready)
 def check_system_ready():
+    set_recovery_stage(RecoveryStage.IDLE, "공정 시작")
     status.set_state(ProcessState.INIT, "시스템 및 센서 체크 중")
     # 좌표 불러오기
     coords = coordinates()
@@ -501,6 +666,7 @@ def check_system_ready():
     #safe_movel(coords["bin_pick_top"])
     safe_movej(coords["home"])
     gripper_open()
+    set_recovery_stage(RecoveryStage.READY, "초기 위치 및 그리퍼 오픈")
     status.set_state(ProcessState.READY, "초기 대기 위치 및 그리퍼 확인 완료")
     return True
 
@@ -514,6 +680,7 @@ def pick_bin():
     safe_movel_relative(coords["bin_pick"])
 
     gripper_close()
+    set_recovery_stage(RecoveryStage.BIN_GRASPED, "수거통 파지 명령 완료")
     safe_wait(0.8)
 
     if not is_grasped():
@@ -521,6 +688,7 @@ def pick_bin():
         gripper_open()
         raise RuntimeError("수거통의 위치를 확인해 주세요")
 
+    set_recovery_stage(RecoveryStage.BIN_GRASPED, "음식물 수거통 파지 확인 완료")
     safe_movel_relative(coords["bin_pick_top"], require_grasp=True)
 
 # 음식물 쓰레기 폐기통에 버리는 모션
@@ -553,6 +721,7 @@ def run_periodic_dump_shake(mode):
 def run_dump_motion(mode: int):
     status.set_state(ProcessState.DUMPING, f"mode={mode}")
     status.publish_mode(mode)
+    set_recovery_stage(RecoveryStage.DUMP_STARTED, "음식물 배출 동작 진입")
     coords = coordinates()
 
     if mode not in (DUMP_MODE_NORMAL, DUMP_MODE_STRONG):
@@ -562,6 +731,7 @@ def run_dump_motion(mode: int):
     safe_movel_relative(coords["dump_tilt"], require_grasp=True)
 
     run_periodic_dump_shake(mode)
+    set_recovery_stage(RecoveryStage.WASTE_DUMPED, "음식물 배출 완료")
     safe_movel_relative(coords["dump_tilt_back"], require_grasp=True)
 
 def run_periodic_water_shake():
@@ -584,21 +754,36 @@ def execute_wash():
     status.set_state(ProcessState.WASHING, "세척 위치 이동")
     coords = coordinates()
 
+    # 세척 지그 접근/안착 구간은 RESET 복구 경로가 달라서 세분화한다.
+    set_recovery_stage(RecoveryStage.WASH_APPROACHING, "세척수 받는 진입장소 이동 중")
     safe_movej(coords["way_point_j"], require_grasp=True)
     safe_movej(coords["wash_approach_j"], require_grasp=True) #세척기 앞(wash_approach_x)으로 이동
+    set_recovery_stage(RecoveryStage.WASH_APPROACH_REACHED, "세척수 받는 진입장소 도착")
+    set_recovery_stage(RecoveryStage.WASH_PLACING, "세척 위치에 수거통 내려놓는 중")
     safe_movel_relative(coords["wash_place"], require_grasp=True)
     apply_wash_place_force() # 수거통을 세척 지그(Jig)에 내려놓을 때 쾅 부딪히지 않고 사람이 손으로 꾹 눌러 끼우듯,
     # 일정한 힘(X축 65N, Z축 10N)으로 부드럽게 밀어 넣습니다.
+    set_recovery_stage(RecoveryStage.WASH_JIG_PLACED, "세척 위치 안착 완료")
 
     # 세척 위치에 수거통을 내려놓고 수도 레버를 조작한다.
     gripper_open()
+    set_recovery_stage(RecoveryStage.WASH_JIG_RELEASED, "세척 위치 수거통 릴리즈 완료")
+    # 통을 내려놓은 뒤 지그에서 빠져나가는 중에 멈추면,
+    # RESET 때 어느 안전 지점까지 지났는지 구분하기 위해 세부 체크포인트를 남긴다.
+    set_recovery_stage(RecoveryStage.WASH_JIG_LEAVING, "세척 위치 통 안착 후 지그 이탈 중")
     safe_movej(coords["wash_approach_j"])
+    set_recovery_stage(RecoveryStage.WASH_JIG_LEFT, "세척 위치 접근장소 경유 완료")
+    set_recovery_stage(RecoveryStage.WASH_TO_WAYPOINT, "세척 위치 접근장소에서 경유점 이동 중")
     safe_movej(coords["way_point_j"])
+    set_recovery_stage(RecoveryStage.WASH_WAYPOINT_REACHED, "세척 위치 이탈 후 경유점 도착")
     safe_movej(coords["wash_app_j"])
     gripper_close()
+    set_recovery_stage(RecoveryStage.WATER_VALVE_GRASPED, "세척수 밸브 파지 완료 - 열기 전")
     safe_movel_relative(coords["wash_close"])
+    set_recovery_stage(RecoveryStage.WATER_VALVE_TURNED, "세척수 밸브 열기 동작 실행 완료")
     safe_movel_relative(coords["wash_open"])
     gripper_open()
+    set_recovery_stage(RecoveryStage.WATER_IN_BIN, "세척수 주입 완료")
 
     # 세척이 끝난 수거통을 다시 파지한다.
     safe_movej(coords["way_point_j"])
@@ -612,15 +797,21 @@ def execute_wash():
         gripper_open()
         raise RuntimeError("세척 후 수거통의 위치를 확인해 주세요")
 
+    set_recovery_stage(RecoveryStage.WASH_BIN_GRASPED, "세척 후 수거통 재파지 완료")
     safe_movel_relative(coords["wash_up"], require_grasp=True)
+    set_recovery_stage(RecoveryStage.WASH_BIN_LIFTED, "세척 후 수거통 들어올림 완료")
     safe_movej(coords["wash_approach_j"], require_grasp=True)
+    set_recovery_stage(RecoveryStage.WASH_BIN_AT_APPROACH, "세척 후 수거통 접근장소 도착")
     safe_movej(coords["way_point_j"], require_grasp=True)
+    set_recovery_stage(RecoveryStage.WASH_BIN_LEFT, "세척 후 수거통 경유점 도착")
 
     # 오수 배출: 교시된 배출/기울임/흔들기 좌표를 순서대로 사용한다.
     safe_movej(coords["water_out_approach_j"], require_grasp=True)
+    set_recovery_stage(RecoveryStage.WATER_DUMPING, "세척수 배출 동작 진입")
     safe_movel_relative(coords["water_out_tilt"], require_grasp=True)
 
     run_periodic_water_shake()
+    set_recovery_stage(RecoveryStage.WATER_DUMPED, "세척수 배출 완료")
 
     safe_movej(coords["water_out_approach_j"], require_grasp=True)
 
@@ -631,13 +822,221 @@ def return_bin_and_complete():
 
     # 새로 추가: 세척과 배수가 끝난 수거통을 원래 위치에 내려놓는다.
     status.set_state(ProcessState.MOVING, "수거통 원위치 및 초기 위치 복귀")
+    set_recovery_stage(RecoveryStage.RETURNING_BIN, "수거통 원위치 복귀 시작")
     safe_movej(coords["way_point_j"], require_grasp=True)
     safe_movej(coords["bin_approach"], require_grasp=True)
     safe_movel_relative(coords["bin_pick"], require_grasp=True)
     gripper_open()
+    set_recovery_stage(RecoveryStage.BIN_RETURNED, "수거통 원위치 내려놓기 완료")
     safe_movel_relative(coords["bin_pick_top"])
     safe_movej(coords["home"])
+    set_recovery_stage(RecoveryStage.COMPLETE, "공정 완료")
     status.set_state(ProcessState.COMPLETE, "배출 및 세척 완료")
+
+
+def return_bin_to_home_after_reset(reason: str):
+    coords = coordinates()
+    status.set_state(ProcessState.MOVING, reason)
+    set_recovery_stage(RecoveryStage.RETURNING_BIN, reason)
+    safe_movej(coords["way_point_j"], require_grasp=True)
+    safe_movej(coords["bin_approach"], require_grasp=True)
+    safe_movel_relative(coords["bin_pick"], require_grasp=True)
+    gripper_open()
+    set_recovery_stage(RecoveryStage.BIN_RETURNED, "수거통 원위치 내려놓기 완료")
+    safe_movel_relative(coords["bin_pick_top"])
+    safe_movej(coords["home"])
+
+
+def reset_home_without_bin(reason: str):
+    coords = coordinates()
+    status.set_state(ProcessState.MOVING, reason)
+    safe_movej(coords["way_point_j"])
+    safe_movej(coords["home"])
+    gripper_open()
+
+
+def retract_wash_area_to_waypoint(require_grasp: bool, reason: str):
+    # 세척 지그 주변에서 바로 way_point_j로 가면 구조물과 간섭될 수 있어
+    # 항상 wash_approach_j를 먼저 거쳐 안전하게 빠져나간다.
+    coords = coordinates()
+    status.set_state(ProcessState.WASHING, reason)
+    safe_movej(coords["wash_approach_j"], require_grasp=require_grasp)
+    safe_movej(coords["way_point_j"], require_grasp=require_grasp)
+
+
+def leave_wash_jig_after_reset():
+    # 통을 세척 위치에 내려놓은 뒤 밸브 위치로 가기 전까지의 이탈 경로를
+    # 마지막 체크포인트에 맞춰 이어 간다.
+    coords = coordinates()
+    stage = get_recovery_stage()
+
+    if stage == RecoveryStage.WASH_JIG_PLACED:
+        gripper_open()
+        set_recovery_stage(RecoveryStage.WASH_JIG_RELEASED, "RESET 중 세척 위치 수거통 릴리즈 완료")
+        stage = RecoveryStage.WASH_JIG_RELEASED
+
+    if stage in (RecoveryStage.WASH_JIG_RELEASED, RecoveryStage.WASH_JIG_LEAVING):
+        set_recovery_stage(RecoveryStage.WASH_JIG_LEAVING, "RESET 중 세척 위치 통 안착 후 지그 이탈 중")
+        safe_movej(coords["wash_approach_j"])
+        set_recovery_stage(RecoveryStage.WASH_JIG_LEFT, "RESET 중 세척 위치 접근장소 도착")
+        stage = RecoveryStage.WASH_JIG_LEFT
+
+    if stage == RecoveryStage.WASH_JIG_LEFT:
+        set_recovery_stage(RecoveryStage.WASH_TO_WAYPOINT, "RESET 중 세척 위치 접근장소에서 경유점 이동 중")
+        safe_movej(coords["way_point_j"])
+        set_recovery_stage(RecoveryStage.WASH_WAYPOINT_REACHED, "RESET 중 세척 위치 이탈 후 경유점 도착")
+        stage = RecoveryStage.WASH_WAYPOINT_REACHED
+
+    if stage == RecoveryStage.WASH_TO_WAYPOINT:
+        safe_movej(coords["way_point_j"])
+        set_recovery_stage(RecoveryStage.WASH_WAYPOINT_REACHED, "RESET 중 세척 위치 이탈 후 경유점 도착")
+
+
+def operate_water_valve_after_reset(stage: RecoveryStage):
+    # 밸브를 잡기 전/잡은 후/돌린 후 중 어디서 멈췄는지에 따라
+    # 이미 끝난 밸브 동작은 반복하지 않고 남은 동작만 이어간다.
+    coords = coordinates()
+    status.set_state(ProcessState.WASHING, "복구: 세척수 밸브 조작")
+
+    if stage in (
+        RecoveryStage.WASH_JIG_PLACED,
+        RecoveryStage.WASH_JIG_RELEASED,
+        RecoveryStage.WASH_JIG_LEAVING,
+        RecoveryStage.WASH_JIG_LEFT,
+        RecoveryStage.WASH_TO_WAYPOINT,
+    ):
+        leave_wash_jig_after_reset()
+        stage = RecoveryStage.WASH_WAYPOINT_REACHED
+
+    if stage == RecoveryStage.WASH_WAYPOINT_REACHED:
+        safe_movej(coords["wash_app_j"])
+        gripper_close()
+        stage = RecoveryStage.WATER_VALVE_GRASPED
+
+    if stage == RecoveryStage.WATER_VALVE_GRASPED:
+        set_recovery_stage(RecoveryStage.WATER_VALVE_GRASPED, "RESET 중 세척수 밸브 파지 완료")
+        safe_movel_relative(coords["wash_close"])
+        set_recovery_stage(RecoveryStage.WATER_VALVE_TURNED, "RESET 중 세척수 밸브 열기 동작 실행 완료")
+        safe_movel_relative(coords["wash_open"])
+    elif stage == RecoveryStage.WATER_VALVE_TURNED:
+        safe_movel_relative(coords["wash_open"])
+
+    gripper_open()
+    set_recovery_stage(RecoveryStage.WATER_IN_BIN, "RESET 중 세척수 주입 완료")
+
+
+def recover_bin_from_wash_jig():
+    coords = coordinates()
+    status.set_state(ProcessState.WASHING, "복구: 세척 위치 수거통 재파지")
+    safe_movej(coords["wash_approach_j"])
+    safe_movel_relative(coords["wash_pick"])
+    gripper_close()
+    safe_wait(0.8)
+
+    if not is_grasped():
+        status.publish_safety(ErrorCode.ERR_PICK, "RESET 중 세척 위치 수거통 파지 불량")
+        gripper_open()
+        raise RuntimeError("RESET 중 세척 위치 수거통의 위치를 확인해 주세요")
+
+    set_recovery_stage(RecoveryStage.WASH_BIN_GRASPED, "RESET 중 세척 위치 수거통 재파지 완료")
+    safe_movel_relative(coords["wash_up"], require_grasp=True)
+    set_recovery_stage(RecoveryStage.WASH_BIN_LIFTED, "RESET 중 세척 위치 수거통 들어올림 완료")
+    safe_movej(coords["wash_approach_j"], require_grasp=True)
+    set_recovery_stage(RecoveryStage.WASH_BIN_AT_APPROACH, "RESET 중 세척 위치 수거통 접근장소 도착")
+    safe_movej(coords["way_point_j"], require_grasp=True)
+    set_recovery_stage(RecoveryStage.WASH_BIN_LEFT, "RESET 중 세척 위치 수거통 경유점 도착")
+
+
+def move_wash_bin_to_waypoint_after_reset(stage: RecoveryStage):
+    # 세척 위치에서 통을 다시 잡은 뒤 멈춘 위치에 맞춰 안전하게 경유점까지 빠져나온다.
+    coords = coordinates()
+    if stage == RecoveryStage.WASH_BIN_GRASPED:
+        safe_movel_relative(coords["wash_up"], require_grasp=True)
+        set_recovery_stage(RecoveryStage.WASH_BIN_LIFTED, "RESET 중 세척 위치 수거통 들어올림 완료")
+        stage = RecoveryStage.WASH_BIN_LIFTED
+    if stage == RecoveryStage.WASH_BIN_LIFTED:
+        safe_movej(coords["wash_approach_j"], require_grasp=True)
+        set_recovery_stage(RecoveryStage.WASH_BIN_AT_APPROACH, "RESET 중 세척 위치 수거통 접근장소 도착")
+        stage = RecoveryStage.WASH_BIN_AT_APPROACH
+    if stage == RecoveryStage.WASH_BIN_AT_APPROACH:
+        safe_movej(coords["way_point_j"], require_grasp=True)
+        set_recovery_stage(RecoveryStage.WASH_BIN_LEFT, "RESET 중 세척 위치 수거통 경유점 도착")
+
+
+def dump_remaining_water_after_reset(start_from_water_area: bool = False):
+    coords = coordinates()
+    status.set_state(ProcessState.WASHING, "복구: 세척수 배출")
+    if not start_from_water_area:
+        safe_movej(coords["way_point_j"], require_grasp=True)
+    safe_movej(coords["water_out_approach_j"], require_grasp=True)
+    set_recovery_stage(RecoveryStage.WATER_DUMPING, "RESET 중 세척수 배출 동작 진입")
+    safe_movel_relative(coords["water_out_tilt"], require_grasp=True)
+    run_periodic_water_shake()
+    set_recovery_stage(RecoveryStage.WATER_DUMPED, "RESET 중 세척수 배출 완료")
+    safe_movej(coords["water_out_approach_j"], require_grasp=True)
+
+
+def recover_after_emergency_stop():
+    # RESET의 핵심 분기점. 마지막 RecoveryStage를 기준으로
+    # 음식물 배출 여부, 세척수 주입 여부, 세척수 배출 여부에 맞는 후동작을 선택한다.
+    stage = get_recovery_stage()
+    g_node.get_logger().warning(f"RESET 복구 분기 시작: last_stage={stage.value}")
+    _emergency_stop_requested.clear()
+
+    if stage in (RecoveryStage.IDLE, RecoveryStage.READY, RecoveryStage.COMPLETE):
+        if status.state == ProcessState.COLLISION and is_grasped():
+            set_recovery_stage(RecoveryStage.BIN_GRASPED, "RESET 중 실제 파지 상태 확인")
+            return_bin_to_home_after_reset("RESET: 충돌 후 수거통 파지 확인 - 수거통 원위치 후 초기 위치 복귀")
+        else:
+            reset_home_without_bin("RESET: 파지 중인 수거통 없음 - 초기 위치 복귀")
+    elif stage == RecoveryStage.BIN_RETURNED:
+        reset_home_without_bin("RESET: 수거통 원위치 내려놓기 완료 - 초기 위치 복귀")
+    elif not recovery_stage_at_least(stage, RecoveryStage.WASTE_DUMPED):
+        return_bin_to_home_after_reset("RESET: 음식물 미배출 - 수거통 원위치 후 초기 위치 복귀")
+    elif not recovery_stage_at_least(stage, RecoveryStage.WATER_DUMPED):
+        # 통을 세척 위치에 내려놓기 전이라면, 먼저 세척 진입장소를 거쳐 빠져나온 뒤
+        # 원래 세척 진입 순서를 다시 수행한다.
+        if stage in (
+            RecoveryStage.WASH_APPROACHING,
+            RecoveryStage.WASH_APPROACH_REACHED,
+            RecoveryStage.WASH_PLACING,
+        ):
+            retract_wash_area_to_waypoint(
+                True,
+                "RESET: 세척 위치 안착 전 정지 - 세척 진입장소 경유 후 재진입",
+            )
+            execute_wash()
+        elif not recovery_stage_at_least(stage, RecoveryStage.WASH_JIG_PLACED):
+            status.set_state(ProcessState.WASHING, "RESET: 음식물 배출 완료 - 세척/배수 후 복귀")
+            execute_wash()
+        else:
+            if stage in (
+                RecoveryStage.WASH_JIG_PLACED,
+                RecoveryStage.WASH_JIG_RELEASED,
+                RecoveryStage.WASH_JIG_LEAVING,
+                RecoveryStage.WASH_JIG_LEFT,
+                RecoveryStage.WASH_TO_WAYPOINT,
+                RecoveryStage.WASH_WAYPOINT_REACHED,
+                RecoveryStage.WATER_VALVE_GRASPED,
+                RecoveryStage.WATER_VALVE_TURNED,
+            ):
+                operate_water_valve_after_reset(stage)
+                recover_bin_from_wash_jig()
+            elif stage == RecoveryStage.WATER_IN_BIN:
+                recover_bin_from_wash_jig()
+            elif stage in (
+                RecoveryStage.WASH_BIN_GRASPED,
+                RecoveryStage.WASH_BIN_LIFTED,
+                RecoveryStage.WASH_BIN_AT_APPROACH,
+            ):
+                move_wash_bin_to_waypoint_after_reset(stage)
+            dump_remaining_water_after_reset(start_from_water_area=(stage == RecoveryStage.WATER_DUMPING))
+        return_bin_to_home_after_reset("RESET: 세척수 배출 완료 - 수거통 원위치 후 초기 위치 복귀")
+    else:
+        return_bin_to_home_after_reset("RESET: 세척수 배출 완료 상태 - 수거통 원위치 후 초기 위치 복귀")
+
+    set_recovery_stage(RecoveryStage.IDLE, "RESET 복구 완료")
+    status.set_state(ProcessState.IDLE, "RESET 완료 - 분기 복구 후 초기 위치 복귀")
 
 
 def run_process(mode: int):
@@ -648,43 +1047,69 @@ def run_process(mode: int):
         execute_wash() # 4단계: 세척 및 오수 배출 (execute_wash)
         return_bin_and_complete() # 5단계: 원위치 복귀 및 종료 (return_bin_and_complete)
         return True, "배출 및 세척 완료"
+    except EmergencyStopError as exc:
+        if status.state != ProcessState.COLLISION:
+            status.set_state(ProcessState.ERROR, str(exc))
+        return False, str(exc)
     except Exception as exc:
         status.set_state(ProcessState.ERROR, str(exc))
         try:
-            stop(_ds.DR_QSTOP)
+            request_motion_stop(str(exc))
         except Exception:
             pass
         return False, str(exc)
-
-import threading
 
 _process_lock = threading.Lock()
 
 
 def _run_process_worker(task_id, mode_id):
-    """run_process를 별도 스레드에서 실행 (handle_robot_command 콜백을 즉시 반환시켜
-    g_node의 spin이 막히지 않게 함 -> EMERGENCY_STOP 등 다른 명령이 즉시 처리 가능해짐)"""
+    """START 콜백에서 하던 run_process 본문을 워커 스레드에서 실행한다.
+
+    콜백은 즉시 반환시켜 EMERGENCY_STOP/RESET 명령을 계속 받을 수 있게 하고,
+    기존 START 코드의 결과 로그와 process lock 해제 흐름은 여기에서 유지한다.
+    """
     try:
         ok, result_message = run_process(mode_id)
-        log = g_node.get_logger().info if ok else g_node.get_logger().error
-        log(f"task_id={task_id}: {result_message}")
-    except Exception as exc:
-        g_node.get_logger().error(f"task_id={task_id}: run_process 실행 중 예외 발생: {exc}")
+        if ok:
+            g_node.get_logger().info(f"task_id={task_id}: {result_message}")
+        elif _emergency_stop_requested.is_set():
+            g_node.get_logger().info(f"task_id={task_id}: 안전정지 처리 완료 - {result_message}")
+        else:
+            g_node.get_logger().error(f"task_id={task_id}: {result_message}")
     finally:
-        if _process_lock.locked():
-            try:
-                _process_lock.release()
-            except RuntimeError:
-                pass
-
-import threading
-
-_process_lock = threading.Lock()
+        _process_lock.release()
 
 
 # ==============================================================================
 # [Command topic entry]
 # ==============================================================================
+
+
+def handle_emergency_stop(source: str = "/robot/command"):
+    """EMERGENCY_STOP 공통 처리. 여러 콜백에서 동시에 들어와도 정지 요청은 직렬화한다."""
+    with _emergency_command_lock:
+        g_node.get_logger().warning(f"비상정지 명령 수신({source}) — 즉시 정지 수행")
+        try:
+            trigger_safety_stop(
+                ErrorCode.ERR_SYSTEM,
+                "사용자 비상정지 요청",
+                ProcessState.ERROR,
+            )
+        except Exception as exc:
+            g_node.get_logger().error(f"비상정지 처리 중 예외 발생: {exc}")
+
+
+def handle_emergency_stop_priority(msg: String):
+    """같은 /robot/command 토픽에서 EMERGENCY_STOP만 별도 콜백으로 먼저 처리한다."""
+    # 일반 명령 콜백이 바쁘더라도 ReentrantCallbackGroup에서 비상정지만 별도로 잡기 위한 구독이다.
+    try:
+        command = json.loads(msg.data)
+    except (json.JSONDecodeError, TypeError):
+        return
+
+    cmd_type = command.get("command_type") or command.get("command")
+    if cmd_type == "EMERGENCY_STOP":
+        handle_emergency_stop("/robot/command priority")
 
 
 def handle_robot_command(msg: String):
@@ -718,10 +1143,11 @@ def handle_robot_command(msg: String):
             g_node.get_logger().warning(f"이미 공정이 진행 중입니다. task_id={task_id} 명령 무시.")
             return
 
+        _emergency_stop_requested.clear()
         g_node.get_logger().info(f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}")
 
-        # ★ 핵심 변경: run_process를 별도 스레드로 던지고 콜백은 즉시 반환
-        #    -> g_node의 spin이 막히지 않아 EMERGENCY_STOP/RESET이 동작 중에도 즉시 처리됨
+        # 기존 START 코드의 run_process 실행/결과 로그/락 해제는 워커에서 수행한다.
+        # 콜백은 즉시 반환시켜 모션 중 EMERGENCY_STOP/RESET 명령을 받을 수 있게 한다.
         threading.Thread(
             target=_run_process_worker,
             args=(task_id, mode_id),
@@ -784,17 +1210,7 @@ def handle_robot_command(msg: String):
     # 케이스 3.5: [EMERGENCY_STOP] 비상정지 — 즉시 처리, 락 상태와 무관하게 동작
     # --------------------------------------------------------------------------
     elif cmd_type == "EMERGENCY_STOP":
-        g_node.get_logger().warning("비상정지 명령 수신 — 즉시 정지 수행")
-        try:
-            raise_safety_stop(ErrorCode.ERR_SYSTEM, "사용자 비상정지 요청")
-        except Exception as exc:
-            g_node.get_logger().error(f"비상정지 처리 중 예외 발생: {exc}")
-        finally:
-            if _process_lock.locked():
-                try:
-                    _process_lock.release()
-                except RuntimeError:
-                    pass
+        handle_emergency_stop("/robot/command")
         return
 
     # --------------------------------------------------------------------------
@@ -805,13 +1221,12 @@ def handle_robot_command(msg: String):
             g_node.get_logger().warning("공정 진행 중 - RESET 명령 무시됨")
             return
 
-        g_node.get_logger().info("RESET 명령 수신 — 안전 경유점을 거쳐 초기 위치로 복귀")
+        g_node.get_logger().info("RESET 명령 수신 — 마지막 체크포인트 기준 복구 수행")
         try:
-            coords = coordinates()
-            safe_movej(coords["way_point_j"])   # 경유점을 먼저 거쳐서
-            safe_movej(coords["home"])          # 초기 위치로 복귀
-            gripper_open()
-            status.set_state(ProcessState.IDLE, "RESET 완료 - 초기 위치 복귀")
+            # 컨트롤러 자체 안전정지 상태면 프로그램 복구 모션을 보내지 않는다.
+            if block_reset_if_controller_safety_stop():
+                return
+            recover_after_emergency_stop()
             g_node.get_logger().info("RESET 완료 — IDLE 상태로 복귀")
         except Exception as exc:
             g_node.get_logger().error(f"RESET 처리 중 예외 발생: {exc}")
@@ -830,12 +1245,11 @@ def handle_robot_command(msg: String):
 # ==============================================================================
 # [메인]
 # ==============================================================================
-import threading
-from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
-from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
+from rclpy.executors import MultiThreadedExecutor
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup, ReentrantCallbackGroup
 
 def main(args=None):
-    global g_node, status, dsr_node
+    global g_node, status, dsr_node, stop_node
 
     rclpy.init(args=args)
 
@@ -843,10 +1257,10 @@ def main(args=None):
     dsr_node = rclpy.create_node("food_waste_dump_robot_dsr", namespace=ROBOT_ID)
     DR_init.__dsr__node = dsr_node   # DSR API가 내부적으로 쓰는 노드는 이쪽 하나만
 
-    dsr_executor = SingleThreadedExecutor()
-    dsr_executor.add_node(dsr_node)
-    dsr_spin_thread = threading.Thread(target=dsr_executor.spin, daemon=True)
-    dsr_spin_thread.start()
+    # DSR_ROBOT2 API와 그리퍼 서비스 호출부가 spin_until_future_complete(dsr_node, ...)를
+    # 직접 수행하므로 dsr_node를 별도 executor에서 상시 spin하지 않는다.
+    # 정지 서비스는 DSR API spin과 충돌하지 않도록 별도 노드에서 호출한다.
+    stop_node = rclpy.create_node("food_waste_dump_robot_stop", namespace=ROBOT_ID)
 
     # ---- 노드 2: 토픽 구독/명령 처리 전용 노드 (메인 스레드) ----
     node = rclpy.create_node("food_waste_dump_robot", namespace=ROBOT_ID)
@@ -859,13 +1273,18 @@ def main(args=None):
     init_robot_api()
     init_gripper_api()
 
-    # 콜백 그룹 분리: START(오래 걸림)와 EMERGENCY_STOP/RESET(즉시 처리)를 분리
+    # 일반 명령과 비상정지 전용 콜백을 분리한다.
+    # 같은 /robot/command 토픽이라도 EMERGENCY_STOP은 별도 Reentrant 그룹에서 먼저 처리될 수 있다.
     process_callback_group = MutuallyExclusiveCallbackGroup()
-    command_callback_group = MutuallyExclusiveCallbackGroup()
+    emergency_callback_group = ReentrantCallbackGroup()
 
     node.create_subscription(
+        String, "/robot/command", handle_emergency_stop_priority, 10,
+        callback_group=emergency_callback_group
+    )
+    node.create_subscription(
         String, "/robot/command", handle_robot_command, 10,
-        callback_group=process_callback_group   # 일단 모든 명령을 같은 구독에서 받음
+        callback_group=process_callback_group
     )
 
     status.set_state(ProcessState.IDLE, "작업 대기")
@@ -879,7 +1298,7 @@ def main(args=None):
     executor.add_node(node)
 
     try:
-        rclpy.spin(node)   # 메인 스레드는 명령 노드만 spin
+        executor.spin()   # 메인 스레드는 명령 노드만 spin
     finally:
         try:
             gripper_open()
@@ -887,6 +1306,7 @@ def main(args=None):
             pass
         node.destroy_node()
         dsr_node.destroy_node()
+        stop_node.destroy_node()
         rclpy.shutdown()
 
 
