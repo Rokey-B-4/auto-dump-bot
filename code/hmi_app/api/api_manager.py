@@ -1,4 +1,4 @@
-from api.api_base import BaseAPI
+from .api_base import BaseAPI
 
 class AdminAPI(BaseAPI):
 

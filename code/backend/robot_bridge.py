@@ -313,14 +313,14 @@ class RobotBridgeManager:
         }
         self._dispatch(payload)
 
-        def _gripper_status_callback(self, msg) -> None:
-            print(f"[ROS2 /gripper/status 수신]: {msg.data}", flush=True)
-            payload = {
-                "type": "GRIPPER_STATUS",
-                "grasped": msg.data,
-                "timestamp": time.time(),
-            }
-            self._dispatch(payload)
+    def _gripper_status_callback(self, msg) -> None:
+        print(f"[ROS2 /gripper/status 수신]: {msg.data}", flush=True)
+        payload = {
+            "type": "GRIPPER_STATUS",
+            "grasped": msg.data,
+            "timestamp": time.time(),
+        }
+        self._dispatch(payload)
 
     # ------------------------------------------------------------------
 
