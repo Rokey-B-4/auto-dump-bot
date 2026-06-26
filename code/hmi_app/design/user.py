@@ -61,26 +61,45 @@ class FoodWasteGUI:
             while not self.event_queue.empty():
                 data = self.event_queue.get_nowait()
                 msg_type = data.get("type")
-                payload = data.get("payload")
 
+                # ── PROCESS_STATE ──────────────────────────────────────────
+                # 백엔드: { "type": "PROCESS_STATE", "payload": "단계명" }
                 if msg_type == "PROCESS_STATE":
                     if self.emergency_stop:
-                        continue  # 비상 정지 상태에서는 UI 업데이트를 무시
+                        continue  # 비상 정지 상태에서는 UI 업데이트 무시
 
-                    # 서버가 보내준 단계 이름이 들어오면 UI 업데이트
+                    payload = data.get("payload", "")
                     if hasattr(self, "status") and self.status and self.status.winfo_exists():
                         try:
                             self.status.configure(text=payload)
                             self.update_step_ui_by_server(payload)
                         except Exception as e:
                             print(f"UI 업데이트 오류: {e}")
-                        # 서버가 특정 단계 이름을 보내면 그에 맞춰 진행률도 업데이트
-                        # self.update_step_ui_by_server(payload)
 
+                # ── SAFETY_EVENT ────────────────────────────────────────────
+                # 백엔드: { "type": "SAFETY_EVENT",
+                #           "error_code": "ERR_COLLISION" 등,
+                #           "error_msg": "상세 메시지" }
+                # main.py _queue_consumer_loop가 이 타입을 broadcast하도록 수정됨
                 elif msg_type == "SAFETY_EVENT":
-                    if payload == "EMERGENCY_STOP":
+                    if not self.emergency_stop:   # 중복 트리거 방지
+                        error_code = data.get("error_code", "")
+                        print(f"[WS] SAFETY_EVENT 수신: code={error_code}", flush=True)
                         self.trigger_drop_error()
-                    
+
+                # ── ROBOT_STATUS ────────────────────────────────────────────
+                # 백엔드: { "type": "ROBOT_STATUS",
+                #           "payload": { "process_state", "gripper_state",
+                #                        "joints", "last_safety_event"(있을 때만) },
+                #           "timestamp": "..." }
+                # last_safety_event가 payload 안에 들어올 경우를 추가로 감지
+                elif msg_type == "ROBOT_STATUS":
+                    if not self.emergency_stop:
+                        inner = data.get("payload", {})
+                        if isinstance(inner, dict) and "last_safety_event" in inner:
+                            print("[WS] ROBOT_STATUS 안 last_safety_event 감지 → 비상 정지", flush=True)
+                            self.trigger_drop_error()
+
         except Exception as e:
             print(f"Queue Processing Error: {e}")
         self.root.after(50, self.process_queue)
@@ -466,7 +485,8 @@ class FoodWasteGUI:
         if not hasattr(self, "status") or not self.status.winfo_exists():
             return
         self.status.configure(text="모든 작업 완료", text_color="#00fa9a")
-        
+
+        # 관리자 콘솔 상태도 완료로 갱신 (백엔드 WS가 "작업 완료" 단계명을 보내도 동일하게 반영)
         if self.manager_console:
             self.manager_console.update_user_status("대기 중 (작업 완료)")
         if self.error_btn.winfo_exists():
@@ -477,28 +497,34 @@ class FoodWasteGUI:
     # ========================================================
     # 6. EMERGENCY LOCK SCREEN SYSTEM (비상 정지 전체 오버레이)
     # ========================================================
-    # ========================================================
-    # 6. EMERGENCY LOCK SCREEN SYSTEM (비상 정지 전체 오버레이)
-    # ========================================================
+
     def trigger_drop_error(self):
         """센서 단락 혹은 관리자 콘솔 긴급 중단 명령 패킷 수신 시 호출"""
         # 1. 즉시 상태 플래그를 변경하여 추가적인 run_process나 백그라운드 UI 업데이트 차단
         self.emergency_stop = True
         self.is_running = False
-        
+
+        # 2. 백엔드 DB에 에러 이력 기록
+        #    error_code: 백엔드 tb_error_log 스펙 기준 (ERR_COLLISION)
+        #    error_msg:  백엔드 ErrorLogRequest.error_msg 필드에 저장되는 상세 메시지
         if self.current_task_id:
             try:
-                self.api_service.send_error_log(self.current_task_id, "DROP001", "수거통 탈락 감지")
+                self.api_service.send_error_log(
+                    self.current_task_id,
+                    "ERR_COLLISION",          # ← 수정: DROP001 → 백엔드 스펙 코드
+                    "충돌 감지: 비상 정지 인터록 가동"
+                )
             except Exception as e:
                 print(f"에러 로그 전송 실패: {e}")
 
+        # 3. 관리자 콘솔 실시간 상태 텍스트 갱신
         if self.manager_console:
             try:
-                self.manager_console.update_user_status("❌ 원격 강제 중단됨 (인터록 가동)")
+                self.manager_console.update_user_status("❌ 충돌 감지 — 비상 정지 인터록 가동")
             except Exception:
                 pass
-            
-        # 2. 즉시 화면을 띄우지 않고 10ms의 유예를 두어 메인 스레드에서 안전하게 렌더링
+
+        # 4. 즉시 화면을 띄우지 않고 10ms 유예를 두어 메인 스레드에서 안전하게 렌더링
         self.root.after(10, self.show_fatal_error_screen)
 
     def show_fatal_error_screen(self):
@@ -512,7 +538,7 @@ class FoodWasteGUI:
 
         # 2. 비상 타이틀 컴포넌트
         lbl_emoji = ctk.CTkLabel(self.error_bg_frame, text="🚨", font=("맑은 고딕", 80))
-        lbl_emoji.pack(pady=(130, 10))
+        lbl_emoji.pack(pady=(80, 10))
 
         lbl_title = ctk.CTkLabel(
             self.error_bg_frame, 
@@ -537,9 +563,26 @@ class FoodWasteGUI:
             text_color="#ffffff",
             justify="center"
         )
-        lbl_guide.pack(pady=35)
+        lbl_guide.pack(pady=20)
 
-        # 4. 하단 고정 인터록 잠금 캡션 바
+        # 4. ★ 수평 이동 버튼: 충돌 시 로봇을 안전 위치로 수평 이동 요청
+        self.lateral_move_btn = ctk.CTkButton(
+            self.error_bg_frame,
+            text="↔  수평 이동 요청  ↔",
+            width=280,
+            height=52,
+            font=("맑은 고딕", 16, "bold"),
+            fg_color="#7a3a00",
+            hover_color="#a05000",
+            text_color="#ffcc66",
+            border_color="#ffcc66",
+            border_width=1,
+            corner_radius=12,
+            command=self._on_lateral_move_requested
+        )
+        self.lateral_move_btn.pack(pady=15)
+
+        # 5. 하단 고정 인터록 잠금 캡션 바
         lbl_status = ctk.CTkLabel(
             self.error_bg_frame, 
             text="🔒 SYSTEM LOCK / 원격 관리 권한 해제 대기 중...", 
@@ -547,6 +590,61 @@ class FoodWasteGUI:
             text_color="#a8b3c2"
         )
         lbl_status.pack(side="bottom", pady=25)
+
+    def _on_lateral_move_requested(self):
+        """수평 이동 버튼 클릭 시: 기존 경고창 + 로봇 이격 안전 안내 문구 출력"""
+        warning_message = (
+            "⚠️  수평 이동 명령을 실행하기 전, 반드시 확인하세요!\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            "🚷  지금 즉시 로봇에서 충분히 멀리 떨어져 주십시오!\n"
+            "     로봇 작동 반경(±1.5m) 이내에 절대 접근하지 마세요.\n\n"
+            "로봇 팔이 수평 이동을 시작합니다.\n"
+            "주변 인원의 안전이 확인된 후 명령을 진행해 주세요.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        )
+        confirm = CTkMessagebox(
+            title="⚠️ 수평 이동 전 안전 확인",
+            message=warning_message,
+            icon="warning",
+            option_1="취소",
+            option_2="안전 확인 완료 — 이동 실행",
+            corner_radius=12,
+            width=560
+        )
+        if confirm.get() == "안전 확인 완료 — 이동 실행":
+            # 수평 이동 명령 전송 (J2·J3 방향 제로 복귀로 수평 펼침 모사)
+            try:
+                self.api_service.send_hardware_command({
+                    "J1": 0.0,
+                    "J2": 0.0,
+                    "J3": 0.0,
+                    "J4": 0.0,
+                    "J5": 0.0,
+                    "J6": 0.0
+                })
+                # 버튼 비활성화 — 중복 요청 방지
+                if hasattr(self, "lateral_move_btn") and self.lateral_move_btn.winfo_exists():
+                    self.lateral_move_btn.configure(
+                        state="disabled",
+                        text="↔  수평 이동 명령 전송 완료  ↔",
+                        fg_color="#333b4c",
+                        text_color="#a8b3c2"
+                    )
+                CTkMessagebox(
+                    title="수평 이동 명령 전송",
+                    message="✅ 수평 이동 명령이 로봇 서버로 전송되었습니다.\n관리자의 원상복구 조치를 기다려 주세요.",
+                    icon="check",
+                    option_1="확인",
+                    corner_radius=12
+                )
+            except Exception as e:
+                CTkMessagebox(
+                    title="명령 전송 실패",
+                    message=f"❌ 수평 이동 명령 전송 중 오류가 발생했습니다.\n{e}",
+                    icon="cancel",
+                    option_1="확인",
+                    corner_radius=12
+                )
 
     # ========================================================
     # 7. RECOVERY SYSTEM (관리자 콘솔 원격 복구 초기화 커넥터)
@@ -576,6 +674,8 @@ class FoodWasteGUI:
                 self.error_bg_frame.destroy()
             except:
                 pass
+        # 수평 이동 버튼 참조 해제 (error_bg_frame 파괴로 이미 소멸되지만 명시적 정리)
+        self.lateral_move_btn = None
             
         if self.manager_console:
             self.manager_console.update_user_status("대기 중")
