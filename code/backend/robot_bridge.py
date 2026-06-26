@@ -139,7 +139,7 @@ class RobotBridgeManager:
         self.command_pub = self.node.create_publisher(String, TOPIC_COMMAND, 10)
 
         # 2. 기존과 동일하게 타이머도 유지 (헬스체크/디버깅 용도)
-        self.timer = self.node.create_timer(1.0, self.timer_callback)
+        # self.timer = self.node.create_timer(1.0, self.timer_callback)
 
         self.executor = SingleThreadedExecutor()
         self.executor.add_node(self.node)
@@ -206,8 +206,8 @@ class RobotBridgeManager:
 
         print("ROS2 spin 루프 종료.", flush=True)
 
-    def timer_callback(self) -> None:
-        print("Timer works!", flush=True)
+    # def timer_callback(self) -> None:
+        # print("Timer works!", flush=True)
 
     # ------------------------------------------------------------------
     # 추가상행 파이프라인 (FastAPI -> ROS) 진입점

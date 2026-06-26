@@ -719,14 +719,12 @@ def handle_robot_command(msg: String):
             return
 
         g_node.get_logger().info(f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}")
-
-        # ★ 핵심 변경: run_process를 별도 스레드로 던지고 콜백은 즉시 반환
-        #    -> g_node의 spin이 막히지 않아 EMERGENCY_STOP/RESET이 동작 중에도 즉시 처리됨
-        threading.Thread(
-            target=_run_process_worker,
-            args=(task_id, mode_id),
-            daemon=True,
-        ).start()
+        try:
+            ok, result_message = run_process(mode_id)
+            log = g_node.get_logger().info if ok else g_node.get_logger().error
+            log(f"task_id={task_id}: {result_message}")
+        finally:
+            _process_lock.release()
         return
 
     # --------------------------------------------------------------------------

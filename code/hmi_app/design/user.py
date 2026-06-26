@@ -13,6 +13,15 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 class FoodWasteGUI:
+    # ROS 상태 문자열 키워드 → (단계 인덱스, steps 텍스트) 매핑
+    STEP_KEYWORD_MAP = [
+        (0, ["수거통 위치 이동", "파지"]),        # 통 파지
+        (1, ["배출 위치 이동"]),                  # 배출 위치 이동
+        (2, ["DUMPING", "mode=", "shaking", "배출"]),  # 음식물 배출
+        (3, ["WASHING", "세척"]),                 # 세척 중
+        (4, ["복귀", "RESET", "home"]),           # 초기 위치 복귀
+        (5, ["COMPLETE", "완료", "IDLE"]),        # 작업 완료
+    ]
     # ========================================================
     # 1. 초기화 / 설정 
     # ========================================================
@@ -27,6 +36,7 @@ class FoodWasteGUI:
         self.root.geometry("1050x700")
         self.root.title("음식물 스마트 처리 시스템 (Auto Dump Bot)")
         self.root.configure(fg_color="#20242f")
+        self._last_step_idx = -1
 
         # 제어 및 상태 변수
         self.is_running = False
@@ -85,15 +95,32 @@ class FoodWasteGUI:
             print(f"Queue Processing Error: {e}")
         self.root.after(50, self.process_queue)
 
-    # 서버 메시지에 따라 단계 UI를 업데이트하는 함수 추가
+    # 서버 메시지에 따라 단계 UI를 업데이트하는 함수
     def update_step_ui_by_server(self, current_step_name):
-        # self.steps = ["통 파지", "배출 위치 이동", ... ] 리스트 활용
+        matched_idx = None
+
         try:
-            idx = self.steps.index(current_step_name)
-            progress = (idx + 1) / len(self.steps)
-            self.update_ui(idx, current_step_name, progress)
+            matched_idx = self.steps.index(current_step_name)
         except ValueError:
-            pass # 정의되지 않은 단계면 무시
+            # ★ 변경: 완료 단계부터 역순으로 검사 (구체적인/뒷단계 키워드 우선순위 높임)
+            for idx, keywords in reversed(self.STEP_KEYWORD_MAP):
+                if any(kw in current_step_name for kw in keywords):
+                    matched_idx = idx
+                    break
+
+        if matched_idx is None:
+            return
+
+        if matched_idx < self._last_step_idx and matched_idx != 0:
+            return
+
+        self._last_step_idx = matched_idx
+        step_label = self.steps[matched_idx]
+        progress = (matched_idx + 1) / len(self.steps)
+        self.update_ui(matched_idx, step_label, progress)
+
+        if matched_idx == len(self.steps) - 1:
+            self.handle_process_complete()
 
     def handle_ws_message(self, data):
         """웹소켓 스레드에서 호출됨: 데이터를 큐에 넣고 즉시 종료"""
@@ -383,7 +410,7 @@ class FoodWasteGUI:
         )
 
         # 자동 공정 프로세스 스레드 기동
-        self.start(self.selected_mode)
+        # self.start(self.selected_mode)
 
     # =======================================================
     # 5. 프로세스 제어 
