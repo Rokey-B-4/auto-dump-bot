@@ -57,16 +57,20 @@ class FoodWasteGUI:
     # 2. 큐 기반 이벤트 처리 시스템
     # ========================================================
     def process_queue(self):
+        """백엔드 웹소켓 메시지 큐를 안전하게 소모하여 UI 상태 전이를 처리하는 데몬 루프"""
+        # 윈도우 창 자체가 이미 파괴되었다면 즉시 스케줄러 다운
+        if not hasattr(self, "root") or not self.root.winfo_exists():
+            return
+            
         try:
             while not self.event_queue.empty():
                 data = self.event_queue.get_nowait()
                 msg_type = data.get("type")
 
                 # ── PROCESS_STATE ──────────────────────────────────────────
-                # 백엔드: { "type": "PROCESS_STATE", "payload": "단계명" }
                 if msg_type == "PROCESS_STATE":
                     if self.emergency_stop:
-                        continue  # 비상 정지 상태에서는 UI 업데이트 무시
+                        continue  # 비상 정지 상태에서는 이미 위젯 레이아웃이 바뀌었으므로 무시
 
                     payload = data.get("payload", "")
                     if hasattr(self, "status") and self.status and self.status.winfo_exists():
@@ -77,32 +81,32 @@ class FoodWasteGUI:
                             print(f"UI 업데이트 오류: {e}")
 
                 # ── SAFETY_EVENT ────────────────────────────────────────────
-                # 백엔드: { "type": "SAFETY_EVENT",
-                #           "error_code": "ERR_COLLISION" 등,
-                #           "error_msg": "상세 메시지" }
-                # main.py _queue_consumer_loop가 이 타입을 broadcast하도록 수정됨
                 elif msg_type == "SAFETY_EVENT":
                     if not self.emergency_stop:   # 중복 트리거 방지
                         error_code = data.get("error_code", "")
                         print(f"[WS] SAFETY_EVENT 수신: code={error_code}", flush=True)
-                        self.trigger_drop_error()
+                        # 외력 충돌에 의한 정지이므로 수평이동 활성화(is_collision=True)
+                        self.show_fatal_error_screen(is_collision=True)
 
                 # ── ROBOT_STATUS ────────────────────────────────────────────
-                # 백엔드: { "type": "ROBOT_STATUS",
-                #           "payload": { "process_state", "gripper_state",
-                #                        "joints", "last_safety_event"(있을 때만) },
-                #           "timestamp": "..." }
-                # last_safety_event가 payload 안에 들어올 경우를 추가로 감지
                 elif msg_type == "ROBOT_STATUS":
                     if not self.emergency_stop:
                         inner = data.get("payload", {})
                         if isinstance(inner, dict) and "last_safety_event" in inner:
                             print("[WS] ROBOT_STATUS 안 last_safety_event 감지 → 비상 정지", flush=True)
-                            self.trigger_drop_error()
+                            # 하드웨어 위험 상황이므로 수평이동 활성화(is_collision=True)
+                            self.show_fatal_error_screen(is_collision=True)
 
         except Exception as e:
             print(f"Queue Processing Error: {e}")
-        self.root.after(50, self.process_queue)
+            
+        ## ---------------------------------------------------------------------
+        ## CRITICAL FIX: C-레벨 메모리 세그폴트(Segmentation Fault) 원천 방어선
+        ## 비상정지 락업 스크린이 뜬 상태(emergency_stop=True)라면 무한 after 루프를
+        ## 완전히 끊어버려 파괴된 구형 위젯 메모리를 참조하다 튕기는 현상을 완벽 차단합니다.
+        ## ---------------------------------------------------------------------
+        if self.root.winfo_exists() and not self.emergency_stop:
+            self.root.after(50, self.process_queue)
 
     # 서버 메시지에 따라 단계 UI를 업데이트하는 함수 추가
     def update_step_ui_by_server(self, current_step_name):
@@ -129,7 +133,10 @@ class FoodWasteGUI:
     # 3. 코어 유틸리티 및 안전 매커니즘 시스템
     # ========================================================
     def clear_root(self):
-        """현재 메인 컨테이너 내부의 모든 유저 인터페이스 위젯 제거"""
+        """현재 메인 컨테이너 내부의 모든 유저 인터페이스 위젯 제거 (세그폴트 최전방 핵심 방어선)"""
+        ## ---------------------------------------------------------------------
+        ## CRITICAL FIX 1: 유령 대기 after 루프들을 선제 박멸하여 파괴된 위젯 접근 원천 봉쇄
+        ## ---------------------------------------------------------------------
         for after_id in self._active_after_ids:
             try:
                 self.root.after_cancel(after_id)
@@ -137,7 +144,9 @@ class FoodWasteGUI:
                 pass
         self._active_after_ids.clear()
 
-        # 자식 위젯 순차 파괴 (winfo_exists 검증 강화)
+        ## ---------------------------------------------------------------------
+        ## CRITICAL FIX 2: 기존의 괄호 유실 등 문법 불안 정정 및 다이렉트 위젯 파괴 메커니즘 고도화
+        ## ---------------------------------------------------------------------
         if hasattr(self, "main_container") and self.main_container.winfo_exists():
             for widget in self.main_container.winfo_children():
                 try:
@@ -147,12 +156,18 @@ class FoodWasteGUI:
                         widget.grid_forget()
                         widget.destroy()
                 except Exception as e:
-                    print(f"Widget destroy safe catch: {e}")()
+                    print(f"Widget destroy safe catch: {e}")
+                    
+        # 파괴된 포인터의 잔여 가비지 초기화
+        self.status = None
+        self.progress = None
 
     def _safe_after(self, ms, command, *args):
-        """비상 정지 및 화면 파괴 시 스케줄러 유령 실행을 막는 방탄 스케줄러"""
-        if self.emergency_stop and command.__name__ == "<lambda>":
-            return
+        """메인 윈도우 인스턴스가 실재할 때만 예약을 안전하게 걸고 추적합니다."""
+        if not hasattr(self, "root") or not self.root.winfo_exists():
+            return None
+        if self.emergency_stop and hasattr(command, "__name__") and command.__name__ == "<lambda>":
+            return None
         after_id = self.root.after(ms, command, *args)
         self._active_after_ids.append(after_id)
         return after_id
@@ -527,60 +542,83 @@ class FoodWasteGUI:
         # 4. 즉시 화면을 띄우지 않고 10ms 유예를 두어 메인 스레드에서 안전하게 렌더링
         self.root.after(10, self.show_fatal_error_screen)
 
-    def show_fatal_error_screen(self):
+    ## ---------------------------------------------------------------------
+    ## CRITICAL FIX: 외력 충돌(is_collision) 상태에 맞춰 UI 문구 분기 및 API 연동
+    ## ---------------------------------------------------------------------
+    def show_fatal_error_screen(self, is_collision=False):
         """기존 자식 위젯을 해치지 않고 붉은색 강제 인터록 스크린 레이어를 최상단에 완전 오버레이"""
         if hasattr(self, "error_bg_frame") and self.error_bg_frame.winfo_exists():
             return
+
+        # 함수 진입 즉시 플래그를 차단하여 process_queue의 무한 UI 접근 차단
+        self.emergency_stop = True
+        self.is_running = False
+        
+        # 내부 상태 동기화 메시지 송신
+        status_msg = "❌ 외력 충돌로 인한 시스템 셧다운" if is_collision else "🚨 사용자 수동 비상 정지 상태"
+        self.handle_ws_message({"type": "PROCESS_STATE", "payload": status_msg})
 
         # 1. 꽉 채우는 다크 레드 비상 대피용 도화지 생성
         self.error_bg_frame = ctk.CTkFrame(self.root, fg_color="#4c1f24", corner_radius=0)
         self.error_bg_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
 
         # 2. 비상 타이틀 컴포넌트
-        lbl_emoji = ctk.CTkLabel(self.error_bg_frame, text="🚨", font=("맑은 고딕", 80))
+        lbl_emoji = ctk.CTkLabel(self.error_bg_frame, text="🛑" if is_collision else "🚨", font=("맑은 고딕", 80))
         lbl_emoji.pack(pady=(80, 10))
 
+        display_title = "HARDWARE INTERLOCK CRITICAL DROP ERROR" if is_collision else "EMERGENCY STOP ACTIVATED"
         lbl_title = ctk.CTkLabel(
             self.error_bg_frame, 
-            text="EMERGENCY STOP ACTIVATED", 
-            font=("Consolas", 28, "bold"), 
+            text=display_title, 
+            font=("Consolas", 24, "bold"), 
             text_color="#ff4d6d"
         )
         lbl_title.pack(pady=10)
 
-        # 3. 비상 상황 조치 내용 안내 본문 패널
-        guide_text = (
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "관리자 원격 제어 또는 하드웨어 중단 신호에 의해 비상 정지 되었습니다.\n"
-            "현장 안전 요건을 파악 중이오니 관리자의 조치가 완료될 때까지 대기해 주십시오.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
+        # 3. 비상 상황 조치 내용 안내 본문 패널 분기 정의
+        if is_collision:
+            guide_text = (
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "안전 레이저 펜스 침범 또는 물리적 외력 충돌이 감지되었습니다.\n"
+                "모든 하드웨어 동력이 전면 차단되었습니다 (Safe Mode 락업).\n\n"
+                "현장 수거함 주변 안전을 정비하고 관리자 승인을 대기하십시오.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
+        else:
+            guide_text = (
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                "사용자가 현장 비상 중단 스위치를 눌러 즉시 정지시켰습니다.\n"
+                "로봇 구동 모터의 전원이 즉각 차단되었으며 공정이 일시 홀딩됩니다.\n\n"
+                "위험 요소를 제거한 뒤 관리자 콘솔을 통해 시스템 복구를 진행하십시오.\n\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            )
         
         lbl_guide = ctk.CTkLabel(
             self.error_bg_frame, 
             text=guide_text, 
-            font=("맑은 고딕", 15, "bold"), 
+            font=("맑은 고딕", 14, "bold"), 
             text_color="#ffffff",
             justify="center"
         )
         lbl_guide.pack(pady=20)
 
-        # 4. ★ 수평 이동 버튼: 충돌 시 로봇을 안전 위치로 수평 이동 요청
-        self.lateral_move_btn = ctk.CTkButton(
-            self.error_bg_frame,
-            text="↔  수평 이동 요청  ↔",
-            width=280,
-            height=52,
-            font=("맑은 고딕", 16, "bold"),
-            fg_color="#7a3a00",
-            hover_color="#a05000",
-            text_color="#ffcc66",
-            border_color="#ffcc66",
-            border_width=1,
-            corner_radius=12,
-            command=self._on_lateral_move_requested
-        )
-        self.lateral_move_btn.pack(pady=15)
+        # 4. ★ 수평 이동 버튼: 오직 외력 충돌(is_collision=True)이 발생한 경우만 렌더링되도록 격리
+        if is_collision:
+            self.lateral_move_btn = ctk.CTkButton(
+                self.error_bg_frame,
+                text="↔  수평 이동 요청 (Manual Axis Override)  ↔",
+                width=340,
+                height=52,
+                font=("맑은 고딕", 15, "bold"),
+                fg_color="#7a3a00",
+                hover_color="#a05000",
+                text_color="#ffcc66",
+                border_color="#ffcc66",
+                border_width=1,
+                corner_radius=12,
+                command=self._on_lateral_move_requested  # 하단 연동 메서드 호출
+            )
+            self.lateral_move_btn.pack(pady=15)
 
         # 5. 하단 고정 인터록 잠금 캡션 바
         lbl_status = ctk.CTkLabel(
@@ -591,60 +629,43 @@ class FoodWasteGUI:
         )
         lbl_status.pack(side="bottom", pady=25)
 
+    ## ---------------------------------------------------------------------
+    ## CRITICAL FIX: 프론트엔드 UserAPI 매핑 규격에 맞춰 로봇 6축 제어 패킷 릴레이
+    ## ---------------------------------------------------------------------
     def _on_lateral_move_requested(self):
-        """수평 이동 버튼 클릭 시: 기존 경고창 + 로봇 이격 안전 안내 문구 출력"""
-        warning_message = (
-            "⚠️  수평 이동 명령을 실행하기 전, 반드시 확인하세요!\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            "🚷  지금 즉시 로봇에서 충분히 멀리 떨어져 주십시오!\n"
-            "     로봇 작동 반경(±1.5m) 이내에 절대 접근하지 마세요.\n\n"
-            "로봇 팔이 수평 이동을 시작합니다.\n"
-            "주변 인원의 안전이 확인된 후 명령을 진행해 주세요.\n\n"
-            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        )
-        confirm = CTkMessagebox(
-            title="⚠️ 수평 이동 전 안전 확인",
-            message=warning_message,
-            icon="warning",
-            option_1="취소",
-            option_2="안전 확인 완료 — 이동 실행",
-            corner_radius=12,
-            width=560
-        )
-        if confirm.get() == "안전 확인 완료 — 이동 실행":
-            # 수평 이동 명령 전송 (J2·J3 방향 제로 복귀로 수평 펼침 모사)
-            try:
-                self.api_service.send_hardware_command({
-                    "J1": 0.0,
-                    "J2": 0.0,
-                    "J3": 0.0,
-                    "J4": 0.0,
-                    "J5": 0.0,
-                    "J6": 0.0
-                })
-                # 버튼 비활성화 — 중복 요청 방지
-                if hasattr(self, "lateral_move_btn") and self.lateral_move_btn.winfo_exists():
-                    self.lateral_move_btn.configure(
-                        state="disabled",
-                        text="↔  수평 이동 명령 전송 완료  ↔",
-                        fg_color="#333b4c",
-                        text_color="#a8b3c2"
-                    )
+        """에러 락업 상황에서 강제로 수평축 모터를 구동시키는 오버라이드 API 트랜잭션"""
+        # api_user.py의 send_hardware_command가 요구하는 Pydantic 규격 (J1~J6)
+        horizontal_joint_packet = {
+            "J1": 90.0,   # Base 회전축 수평 안전 도피 각도 타겟
+            "J2": 0.0,
+            "J3": 0.0,
+            "J4": 0.0,
+            "J5": 0.0,
+            "J6": 0.0
+        }
+        
+        try:
+            # 프론트엔드 api_service 인스턴스를 통해 백엔드(/api/robot/move-joint)로 전송
+            response = self.api_service.send_hardware_command(horizontal_joint_packet)
+            
+            if response and (response.status_code == 200 or response.status_code == 201):
                 CTkMessagebox(
-                    title="수평 이동 명령 전송",
-                    message="✅ 수평 이동 명령이 로봇 서버로 전송되었습니다.\n관리자의 원상복구 조치를 기다려 주세요.",
+                    title="명령 전송 완료",
+                    message="수평 이동 오버라이드 제어 명령이 로봇 액추에이터에 도달했습니다.",
                     icon="check",
-                    option_1="확인",
-                    corner_radius=12
+                    option_1="확인"
                 )
-            except Exception as e:
-                CTkMessagebox(
-                    title="명령 전송 실패",
-                    message=f"❌ 수평 이동 명령 전송 중 오류가 발생했습니다.\n{e}",
-                    icon="cancel",
-                    option_1="확인",
-                    corner_radius=12
-                )
+            else:
+                raise Exception(f"하드웨어 거절 (Status Code: {response.status_code if response else 'No Response'})")
+                
+        except Exception as e:
+            print(f"[FAIL] 수평 이동 제어 인터페이스 통신 에러: {e}")
+            CTkMessagebox(
+                title="제어 명령 실패",
+                message=f"수평이동 명령을 전송하지 못했습니다:\n{str(e)}",
+                icon="cancel",
+                option_1="확인"
+            )
 
     # ========================================================
     # 7. RECOVERY SYSTEM (관리자 콘솔 원격 복구 초기화 커넥터)
