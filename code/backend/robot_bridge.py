@@ -39,6 +39,7 @@ ROS_NODE_NAME = "fastapi_robot_bridge"
 TOPIC_PROCESS_STATE = "/robot/process_state"
 TOPIC_MOTION_STATUS = "/robot/motion_status"
 TOPIC_SAFETY_EVENT = "/robot/safety_event"
+TOPIC_RECOVERY_STAGE = "/robot/recovery_stage"
 TOPIC_COMMAND = "/robot/command"
 TOPIC_GRIPPER_STATUS = "/gripper/status"
 
@@ -125,6 +126,12 @@ class RobotBridgeManager:
             String,
             TOPIC_SAFETY_EVENT,
             self._safety_event_callback,
+            10,
+        )
+        self.recovery_stage_sub = self.node.create_subscription(
+            String,
+            TOPIC_RECOVERY_STAGE,
+            self._recovery_stage_callback,
             10,
         )
 
@@ -321,6 +328,14 @@ class RobotBridgeManager:
             "timestamp": time.time(),
         }
         self._dispatch(payload)
+
+    def _recovery_stage_callback(self, msg: String) -> None:
+        print(f"[ROS2 /robot/recovery_stage 수신]: {msg.data}", flush=True)
+        self._dispatch({
+            "type": "RECOVERY_STAGE",
+            "stage": msg.data,
+            "timestamp": time.time(),
+        })
 
     # ------------------------------------------------------------------
 

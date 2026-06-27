@@ -46,6 +46,8 @@ class FoodWasteGUI:
         self._active_after_ids = []  # 실시간 스케줄러 ID 추적 리스트
         self._process_queue_after_id = None  # 유저 UI 이벤트 큐 루프 after ID
         self._last_handled_safety_event = None  # ROBOT_STATUS 캐시 반복에 의한 중복 팝업 방지
+        self._ignore_safety_before = 0.0
+        self.recovery_stage = "IDLE"
 
         # 공정 시퀀스 정의
         self.steps = ["통 파지", "배출 위치 이동", "음식물 배출", "세척 중", "초기 위치 복귀", "작업 완료"]
@@ -106,14 +108,21 @@ class FoodWasteGUI:
 
                 # ── ROBOT_STATUS ────────────────────────────────────────────
                 elif msg_type == "ROBOT_STATUS":
+                    inner = data.get("payload", {})
+                    if isinstance(inner, dict):
+                        self.recovery_stage = inner.get("recovery_stage", self.recovery_stage)
                     if not self.emergency_stop:
-                        inner = data.get("payload", {})
                         if isinstance(inner, dict) and "last_safety_event" in inner:
                             last_event = inner.get("last_safety_event", "")
                             print(f"[WS] ROBOT_STATUS 안 last_safety_event 감지: {last_event}", flush=True)
                             
                             event_code = last_event.get("error_code", "") if isinstance(last_event, dict) else ""
                             self._handle_safety_event(event_code, last_event)
+
+                elif msg_type == "RECOVERY_STAGE":
+                    self.recovery_stage = data.get("stage", self.recovery_stage)
+                    if not self.emergency_stop and not self.in_error_state:
+                        self._update_ui_from_recovery_stage(self.recovery_stage)
 
         except Exception as e:
             print(f"Queue Processing Error: {e}")
@@ -142,7 +151,7 @@ class FoodWasteGUI:
         if matched_idx is None:
             return
 
-        if matched_idx < self._last_step_idx and matched_idx != 0:
+        if matched_idx < self._last_step_idx:
             return
 
         self._last_step_idx = matched_idx
@@ -153,9 +162,45 @@ class FoodWasteGUI:
         if matched_idx == len(self.steps) - 1:
             self.handle_process_complete()
 
+    def _step_index_for_recovery_stage(self, stage):
+        """로봇 복구 체크포인트를 HMI의 6단계 진행 표시로 변환합니다."""
+        if stage in {"IDLE", "READY", "BIN_PICKING", "BIN_PICK_FAILED", "BIN_GRASPED"}:
+            return 0
+        if stage in {"DUMP_STARTED", "DUMP_APPROACHED"}:
+            return 1
+        if stage in {"DUMP_TILTING", "DUMP_TILTED", "DUMP_SHAKING", "WASTE_DUMPED",
+                     "DUMP_LEVELING", "DUMP_LEVELED"}:
+            return 2
+        if stage in {"WASH_APPROACHING", "WASH_WAYPOINT_TO_APPROACH", "WASH_APPROACH_REACHED",
+                     "WASH_PLACING", "WASH_JIG_PLACED", "WASH_JIG_RELEASED", "WASH_JIG_LEAVING",
+                     "WASH_JIG_LEFT", "WASH_TO_WAYPOINT", "WASH_WAYPOINT_REACHED",
+                     "WATER_VALVE_APPROACHING", "WATER_VALVE_READY", "WATER_VALVE_GRASPING",
+                     "WATER_VALVE_GRASPED", "WATER_VALVE_TURNING", "WATER_VALVE_TURNED",
+                     "WATER_VALVE_RETURNING", "WATER_VALVE_RETURNED", "WATER_IN_BIN",
+                     "WASH_BIN_GRASPED", "WASH_BIN_LIFTED", "WASH_BIN_AT_APPROACH",
+                     "WASH_BIN_LEFT", "WATER_DUMPING", "WATER_DUMPED"}:
+            return 3
+        if stage in {"RETURNING_BIN", "BIN_RETURNED"}:
+            return 4
+        if stage == "COMPLETE":
+            return 5
+        return None
+
+    def _update_ui_from_recovery_stage(self, stage):
+        step = self._step_index_for_recovery_stage(stage)
+        if step is None or step < self._last_step_idx:
+            return
+        if hasattr(self, "status") and self.status and self.status.winfo_exists():
+            self._last_step_idx = step
+            self.update_ui(step, self.steps[step], (step + 1) / len(self.steps))
+
     def _handle_safety_event(self, error_code, event_payload):
         """안전 이벤트를 종류별로 UI에 반영하고 ROBOT_STATUS 캐시 중복을 차단합니다."""
         if not error_code:
+            return
+
+        event_timestamp = event_payload.get("timestamp", 0) if isinstance(event_payload, dict) else 0
+        if isinstance(event_timestamp, (int, float)) and event_timestamp <= self._ignore_safety_before:
             return
 
         self.in_error_state = True
@@ -660,9 +705,10 @@ class FoodWasteGUI:
         )
         lbl_guide.pack(pady=20)
 
+        can_resume = self._can_resume_after_dump()
         self.error_home_btn = ctk.CTkButton(
             self.error_bg_frame,
-            text="처음으로 (HOME)",
+            text="동작 재개 (RESUME)" if can_resume else "처음으로 (HOME)",
             width=260,
             height=48,
             font=("맑은 고딕", 15, "bold"),
@@ -670,7 +716,7 @@ class FoodWasteGUI:
             hover_color="#145a93",
             text_color="#ffffff",
             corner_radius=12,
-            command=self._return_to_intro_from_error
+            command=self._resume_after_emergency if can_resume else self._return_to_intro_from_error
         )
         self.error_home_btn.pack(pady=(0, 15))
 
@@ -700,6 +746,69 @@ class FoodWasteGUI:
             text_color="#a8b3c2"
         )
         lbl_status.pack(side="bottom", pady=25)
+
+    def _can_resume_after_dump(self):
+        """음식물 배출 완료 체크포인트부터만 남은 공정 재개를 허용합니다."""
+        resumable_stages = {
+            "WASTE_DUMPED", "DUMP_LEVELING", "DUMP_LEVELED", "WASH_APPROACHING",
+            "WASH_WAYPOINT_TO_APPROACH", "WASH_APPROACH_REACHED", "WASH_PLACING",
+            "WASH_JIG_PLACED", "WASH_JIG_RELEASED", "WASH_JIG_LEAVING", "WASH_JIG_LEFT",
+            "WASH_TO_WAYPOINT", "WASH_WAYPOINT_REACHED", "WATER_VALVE_APPROACHING",
+            "WATER_VALVE_READY", "WATER_VALVE_GRASPING", "WATER_VALVE_GRASPED",
+            "WATER_VALVE_TURNING", "WATER_VALVE_TURNED", "WATER_VALVE_RETURNING",
+            "WATER_VALVE_RETURNED", "WATER_IN_BIN", "WASH_BIN_GRASPED", "WASH_BIN_LIFTED",
+            "WASH_BIN_AT_APPROACH", "WASH_BIN_LEFT", "WATER_DUMPING", "WATER_DUMPED",
+            "RETURNING_BIN", "BIN_RETURNED",
+        }
+        return self.recovery_stage in resumable_stages
+
+    def _resume_after_emergency(self):
+        """관리자 초기화와 같은 RESET 경로로 배출 이후의 남은 공정을 수행합니다."""
+        try:
+            self.error_home_btn.configure(state="disabled", text="재개 요청 중...")
+            self.resume_recovery_stage = self.recovery_stage
+            response = self.api_service.reset_robot_system()
+            if response is None or not (200 <= response.status_code < 300):
+                raise RuntimeError("백엔드가 동작 재개 요청을 거절했습니다.")
+            self.resume_step_idx = self._step_index_for_recovery_stage(self.resume_recovery_stage)
+            if self.resume_step_idx is None:
+                self.resume_step_idx = self._last_step_idx
+            self._ignore_safety_before = time.time()
+            self.root.after(100, self._show_resumed_process_ui)
+        except Exception as exc:
+            self.error_home_btn.configure(state="normal", text="동작 재개 (RESUME)")
+            CTkMessagebox(
+                title="동작 재개 실패",
+                message=str(exc),
+                icon="cancel",
+                option_1="확인",
+            )
+
+    def _show_resumed_process_ui(self):
+        """긴급정지 오버레이를 닫고 중단됐던 단계의 진행 화면을 복원합니다."""
+        if not self.root.winfo_exists():
+            return
+
+        self.emergency_stop = False
+        self.in_error_state = False
+
+        if hasattr(self, "error_bg_frame") and self.error_bg_frame and self.error_bg_frame.winfo_exists():
+            self.error_bg_frame.place_forget()
+            self.error_bg_frame.destroy()
+
+        while not self.event_queue.empty():
+            try:
+                self.event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+        step = max(0, min(getattr(self, "resume_step_idx", 0), len(self.steps) - 1))
+        self.create_process_ui()
+        self.is_running = True
+        self._last_step_idx = step
+        self.update_ui(step, self.steps[step], (step + 1) / len(self.steps))
+        self.status.configure(text=f"{self.steps[step]} - 동작 재개 중", text_color="#ffffff")
+        self._restart_process_queue()
 
     def _return_to_intro_from_error(self):
         """오류/긴급정지 화면에서 사용자 시작 화면으로 안전하게 복귀합니다."""

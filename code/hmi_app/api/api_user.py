@@ -13,6 +13,10 @@ class UserAPI(BaseAPI):
             timeout=10
         )
 
+    def reset_robot_system(self):
+        """긴급정지 후 로봇의 체크포인트 기반 복구 동작을 요청합니다."""
+        return self._post("/api/robot/reset", {})
+
     # 에러 로그 전송
     # 백엔드: POST /api/error/log  → ErrorLogRequest { task_id, error_code, error_msg }
     # ★ 수정: 기존 "message" 키 → 백엔드 스펙에 맞게 "error_msg" 로 변경

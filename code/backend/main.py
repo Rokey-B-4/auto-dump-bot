@@ -47,6 +47,7 @@ async def _queue_consumer_loop() -> None:
         "process_state": "대기 중 (사용자 이용 전)",
         "task_id": None,
         "gripper_state": "UNKNOWN",
+        "recovery_stage": "IDLE",
         "joints": {"J1": 0.0, "J2": 0.0, "J3": 0.0, "J4": 0.0, "J5": 0.0, "J6": 0.0},
     }
 
@@ -68,6 +69,8 @@ async def _queue_consumer_loop() -> None:
                         "error_msg": raw_ros_data.get("error_msg"),
                         "timestamp": raw_ros_data.get("timestamp", time.time()),
                     }
+                elif msg_type == "RECOVERY_STAGE":
+                    latest_status["recovery_stage"] = raw_ros_data.get("stage", latest_status["recovery_stage"])
                 # MOTION_STATUS, joints 갱신용 토픽이 추가되면 여기에 elif로 계속 확장
 
                 # 3) 현재 GUI(process_queue)가 인식하는 형태로 PROCESS_STATE 브로드캐스트
@@ -83,6 +86,12 @@ async def _queue_consumer_loop() -> None:
                         "type": "SAFETY_EVENT",
                         "error_code": raw_ros_data.get("error_code"),
                         "error_msg": raw_ros_data.get("error_msg"),
+                        "timestamp": raw_ros_data.get("timestamp", time.time()),
+                    })
+                elif msg_type == "RECOVERY_STAGE":
+                    await connection_manager.broadcast({
+                        "type": "RECOVERY_STAGE",
+                        "stage": latest_status["recovery_stage"],
                         "timestamp": raw_ros_data.get("timestamp", time.time()),
                     })
 

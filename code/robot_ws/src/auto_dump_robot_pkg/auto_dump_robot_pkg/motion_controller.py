@@ -219,6 +219,8 @@ def set_recovery_stage(stage: RecoveryStage, msg: str = ""):
     global _process_stage
     with _stage_lock:
         _process_stage = stage
+    if status is not None:
+        status.publish_recovery_stage(stage)
     if msg:
         g_node.get_logger().info(f"복구 체크포인트: {stage.value} - {msg}")
 
@@ -256,8 +258,6 @@ def coordinates():
         # 배출 위치에서 세척 위치로 이동할 때의 경유점
         "way_point_j": posj(-76.27, 47.33, 97.16, 65.18, 105.46, -56.09),
 
-        # way - home
-
         # 수거통 픽업 위치
         "bin_approach": posj(-43.93, 60.63, 77.03, 55.39, 117.12, -56.03),
 
@@ -273,7 +273,7 @@ def coordinates():
         "wash_approach_j": posj(0.92, 38.79, 130.96, 180.1, 78.8, -89.2),
         "wash_place": posx(0, 0, 45, 0, 0, 0),
         # 수도꼭지 컨트롤
-        "wash_app_j": posj(-16.92, 52.98, 31.28, 50.5, 101.02, -56.09),
+        "wash_app_j": posj(-11.23, 50.7, 25.46, 36.49, 101.75, -56.09),
         "wash_open": posx(0, 0, 0, -140, 0, 0),
         "wash_close": posx(0, 0, 0, 140, 0, 0),
         "wash_pick": posx(0, -15, 40, 0, 0, 0),
@@ -395,6 +395,7 @@ class StatusBus:
         self.state_pub = node.create_publisher(String, "/robot/process_state", 10)
         self.motion_pub = node.create_publisher(String, "/robot/motion_status", 10)
         self.safety_pub = node.create_publisher(String, "/robot/safety_event", 10)
+        self.recovery_stage_pub = node.create_publisher(String, "/robot/recovery_stage", 10)
         self.gripper_pub = node.create_publisher(Bool, "/gripper/status", 10)
         self.mode_pub = node.create_publisher(Int32, "/hmi/mode_cmd", 10)
         self.state = ProcessState.IDLE
@@ -415,6 +416,10 @@ class StatusBus:
         text = f"{code.value}:{msg}"
         self.safety_pub.publish(String(data=text))
         self.node.get_logger().error(text)
+
+    def publish_recovery_stage(self, stage: RecoveryStage):
+        """HMI가 배출 완료 이후인지 정확히 판단할 수 있도록 복구 체크포인트를 발행한다."""
+        self.recovery_stage_pub.publish(String(data=stage.value))
 
     def publish_gripper(self, grasped: bool):
         """현재 그리퍼 파지 여부를 /gripper/status로 발행한다."""
@@ -892,6 +897,7 @@ def execute_wash():
     set_recovery_stage(RecoveryStage.WASH_WAYPOINT_REACHED, "세척 위치 이탈 후 경유점 도착")
     set_recovery_stage(RecoveryStage.WATER_VALVE_APPROACHING, "세척수 밸브 위치 이동 중")
     safe_movej(coords["wash_app_j"])
+    safe_wait(1.0)
     set_recovery_stage(RecoveryStage.WATER_VALVE_READY, "세척수 밸브 위치 도착 - 파지 전")
     set_recovery_stage(RecoveryStage.WATER_VALVE_GRASPING, "세척수 밸브 파지 중")
     gripper_close()
@@ -909,7 +915,7 @@ def execute_wash():
     set_recovery_stage(RecoveryStage.WATER_VALVE_RETURNING, "세척수 밸브 복귀 동작 중")
     safe_movel_relative(coords["wash_open"])
     set_recovery_stage(RecoveryStage.WATER_VALVE_RETURNED, "세척수 밸브 복귀 완료")
-
+    safe_wait(1.0)
     gripper_open()
     set_recovery_stage(RecoveryStage.WATER_IN_BIN, "세척수 주입 완료")
 
