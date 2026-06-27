@@ -39,6 +39,8 @@ ROS_NODE_NAME = "fastapi_robot_bridge"
 TOPIC_PROCESS_STATE = "/robot/process_state"
 TOPIC_MOTION_STATUS = "/robot/motion_status"
 TOPIC_SAFETY_EVENT = "/robot/safety_event"
+# [백업 대비 추가] motion_controller가 발행하는 긴급정지 복구 체크포인트 토픽
+# 기존 공정 상태 문자열만으로는 음식물 배출 완료 전/후를 정확히 판별할 수 없어 별도 토픽으로 분리
 TOPIC_RECOVERY_STAGE = "/robot/recovery_stage"
 TOPIC_COMMAND = "/robot/command"
 TOPIC_GRIPPER_STATUS = "/gripper/status"
@@ -128,6 +130,9 @@ class RobotBridgeManager:
             self._safety_event_callback,
             10,
         )
+        # [백업 대비 추가] RecoveryStage 전용 구독자를 등록
+        # START 작업 중 기록된 마지막 안전 체크포인트를 FastAPI 큐로 전달해,
+        # HMI가 긴급정지 후 HOME 복귀 또는 남은 공정 재개를 정확히 선택할 수 있게 함
         self.recovery_stage_sub = self.node.create_subscription(
             String,
             TOPIC_RECOVERY_STAGE,
@@ -329,6 +334,9 @@ class RobotBridgeManager:
         }
         self._dispatch(payload)
 
+    # [백업 대비 추가] ROS 문자열 체크포인트를 백엔드 공통 이벤트 형식으로 변환
+    # ROS 콜백에서 웹소켓을 직접 호출하지 않고 _dispatch를 사용하므로,
+    # ROS 스레드와 FastAPI AsyncIO 이벤트 루프 사이의 스레드 안전성을 유지
     def _recovery_stage_callback(self, msg: String) -> None:
         print(f"[ROS2 /robot/recovery_stage 수신]: {msg.data}", flush=True)
         self._dispatch({

@@ -46,8 +46,14 @@ class FoodWasteGUI:
         self._active_after_ids = []  # 실시간 스케줄러 ID 추적 리스트
         self._process_queue_after_id = None  # 유저 UI 이벤트 큐 루프 after ID
         self._last_handled_safety_event = None  # ROBOT_STATUS 캐시 반복에 의한 중복 팝업 방지
+        # [백업 대비 추가] 긴급정지 복구의 이벤트 유효시간, 실제 로봇 체크포인트,
+        # 진행 중인 HOME/RESUME 요청을 추적합니다. 과거 안전 이벤트 재실행과 중복 RESET을 막고,
+        # 재개 후 기존 진행 화면을 정확한 단계부터 복원하기 위한 상태값
         self._ignore_safety_before = 0.0
         self.recovery_stage = "IDLE"
+        self._received_recovery_stage = False
+        self._pending_recovery_action = None
+        self._resume_session_active = False
 
         # 공정 시퀀스 정의
         self.steps = ["통 파지", "배출 위치 이동", "음식물 배출", "세척 중", "초기 위치 복귀", "작업 완료"]
@@ -89,10 +95,25 @@ class FoodWasteGUI:
                         continue  # 비상/오류 상태에서는 완료 상태로 덮어쓰지 않음
 
                     payload = data.get("payload", "")
+                    # [백업 대비 추가] 구버전 로봇 노드가 재개 완료를 IDLE 문구로 보내더라도
+                    # HMI에서는 완료 단계와 100% 진행률로 정규화해 잘못된 종료 표시를 고침
+                    if self._resume_session_active and "분기 복구 후 초기 위치 복귀" in payload:
+                        payload = "작업 완료"
+                        self._resume_session_active = False
+                        self._last_step_idx = len(self.steps) - 1
+                        self.update_ui(
+                            self._last_step_idx,
+                            self.steps[self._last_step_idx],
+                            1.0,
+                        )
+                        self.handle_process_complete()
                     if hasattr(self, "status") and self.status and self.status.winfo_exists():
                         try:
                             self.status.configure(text=payload)
-                            self.update_step_ui_by_server(payload)
+                            # [백업 대비 수정] RecoveryStage를 받기 전까지만 문구 기반 단계를 사용
+                            # 이후에는 정확한 체크포인트를 단일 기준으로 사용해 두 매핑의 충돌을 방지
+                            if not self._received_recovery_stage:
+                                self.update_step_ui_by_server(payload)
                         except Exception as e:
                             print(f"UI 업데이트 오류: {e}")
 
@@ -108,20 +129,21 @@ class FoodWasteGUI:
 
                 # ── ROBOT_STATUS ────────────────────────────────────────────
                 elif msg_type == "ROBOT_STATUS":
+                    # [백업 대비 수정] 누적 상태에서는 진행 체크포인트만 사용
+                    # 안전 팝업은 실시간 SAFETY_EVENT에서만 발생시켜 과거 이벤트 재실행을 막음
                     inner = data.get("payload", {})
                     if isinstance(inner, dict):
                         self.recovery_stage = inner.get("recovery_stage", self.recovery_stage)
-                    if not self.emergency_stop:
-                        if isinstance(inner, dict) and "last_safety_event" in inner:
-                            last_event = inner.get("last_safety_event", "")
-                            print(f"[WS] ROBOT_STATUS 안 last_safety_event 감지: {last_event}", flush=True)
-                            
-                            event_code = last_event.get("error_code", "") if isinstance(last_event, dict) else ""
-                            self._handle_safety_event(event_code, last_event)
 
+                # [백업 대비 추가] 체크포인트 이벤트로 진행 바를 갱신하고, HOME 복귀 중 IDLE 도착을
+                # 실제 완료 신호로 사용. 화면을 로봇보다 먼저 전환하던 문제를 고침
                 elif msg_type == "RECOVERY_STAGE":
                     self.recovery_stage = data.get("stage", self.recovery_stage)
-                    if not self.emergency_stop and not self.in_error_state:
+                    self._received_recovery_stage = True
+                    if self._pending_recovery_action == "HOME" and self.recovery_stage == "IDLE":
+                        self._pending_recovery_action = None
+                        self.root.after(0, self._finish_home_recovery)
+                    elif not self.emergency_stop and not self.in_error_state:
                         self._update_ui_from_recovery_stage(self.recovery_stage)
 
         except Exception as e:
@@ -151,6 +173,7 @@ class FoodWasteGUI:
         if matched_idx is None:
             return
 
+        # [백업 대비 수정] 복구 중 "재파지" 문구가 최초 통 파지 단계로 되돌리는 것을 막음
         if matched_idx < self._last_step_idx:
             return
 
@@ -162,6 +185,8 @@ class FoodWasteGUI:
         if matched_idx == len(self.steps) - 1:
             self.handle_process_complete()
 
+    # [백업 대비 추가] motion_controller의 세부 RecoveryStage를 HMI 6단계로 변환
+    # 문구 포함 여부가 아닌 명시적 체크포인트를 사용해 세척 중 재파지 등의 오인식을 해결
     def _step_index_for_recovery_stage(self, stage):
         """로봇 복구 체크포인트를 HMI의 6단계 진행 표시로 변환합니다."""
         if stage in {"IDLE", "READY", "BIN_PICKING", "BIN_PICK_FAILED", "BIN_GRASPED"}:
@@ -193,17 +218,20 @@ class FoodWasteGUI:
         if hasattr(self, "status") and self.status and self.status.winfo_exists():
             self._last_step_idx = step
             self.update_ui(step, self.steps[step], (step + 1) / len(self.steps))
+            if step == len(self.steps) - 1:
+                self._resume_session_active = False
+                self.handle_process_complete()
 
     def _handle_safety_event(self, error_code, event_payload):
         """안전 이벤트를 종류별로 UI에 반영하고 ROBOT_STATUS 캐시 중복을 차단합니다."""
         if not error_code:
             return
 
+        # [백업 대비 추가] 재개 요청 이전에 캐시된 안전 이벤트는 새 긴급정지로 처리하지 않음
+        # 정상 완료 직후 과거 긴급정지 창이 다시 뜨던 문제를 방지
         event_timestamp = event_payload.get("timestamp", 0) if isinstance(event_payload, dict) else 0
         if isinstance(event_timestamp, (int, float)) and event_timestamp <= self._ignore_safety_before:
             return
-
-        self.in_error_state = True
 
         event_key = None
         if isinstance(event_payload, dict):
@@ -218,6 +246,7 @@ class FoodWasteGUI:
         if event_key == self._last_handled_safety_event:
             return
         self._last_handled_safety_event = event_key
+        self.in_error_state = True
 
         event_text = str(event_payload)
         if error_code == "ERR_COLLISION" or "COLLISION" in str(error_code).upper() or "충돌" in event_text or "충격" in event_text:
@@ -428,6 +457,10 @@ class FoodWasteGUI:
 
     def verify_and_start_process(self):
         """배치 완료 시 먼저 서버 연결을 시도하고, 성공하거나 통신이 유지될 때만 메인 UI를 빌드합니다."""
+        # [백업 대비 수정] 이전 작업의 COMPLETE/복구 단계를 새 작업이 물려받지 않도록 초기화
+        self.recovery_stage = "IDLE"
+        self._received_recovery_stage = False
+        self._last_step_idx = -1
         success = self.start(self.selected_mode)
         if success:
             self.create_process_ui()
@@ -440,7 +473,8 @@ class FoodWasteGUI:
         self.in_error_state = False
         self.step_labels = []
         self._last_step_idx = -1
-        self.is_running = False
+        # [백업 대비 수정] START 성공 후 진행 화면 생성 과정에서 실행 상태가 False로 덮이던 문제를 고침
+        self.is_running = True
         self.emergency_stop = False
 
         # 1. 상태 메인 대시보드 타이틀 헤더
@@ -510,6 +544,9 @@ class FoodWasteGUI:
             corner_radius=12, 
             command=self.create_intro_ui
         )
+
+        # [백업 대비 추가] 화면 생성 전에 도착한 최신 로봇 체크포인트를 즉시 진행 표시에 반영
+        self.root.after(0, lambda: self._update_ui_from_recovery_stage(self.recovery_stage))
 
         # 자동 공정 프로세스 스레드 기동
         # self.start(self.selected_mode)
@@ -705,6 +742,8 @@ class FoodWasteGUI:
         )
         lbl_guide.pack(pady=20)
 
+        # [백업 대비 수정] WASTE_DUMPED 전에는 HOME, 이후에는 RESUME 버튼으로 자동 분기
+        # 기존에는 모든 긴급정지에서 시작 화면으로만 이동해 남은 공정을 이어갈 수 없었음
         can_resume = self._can_resume_after_dump()
         self.error_home_btn = ctk.CTkButton(
             self.error_bg_frame,
@@ -716,7 +755,7 @@ class FoodWasteGUI:
             hover_color="#145a93",
             text_color="#ffffff",
             corner_radius=12,
-            command=self._resume_after_emergency if can_resume else self._return_to_intro_from_error
+            command=self._resume_after_emergency if can_resume else self._return_home_after_emergency
         )
         self.error_home_btn.pack(pady=(0, 15))
 
@@ -747,6 +786,10 @@ class FoodWasteGUI:
         )
         lbl_status.pack(side="bottom", pady=25)
 
+    # [백업 대비 추가: 긴급정지 복구 시스템]
+    # 아래 함수들은 사용자 버튼과 관리자 초기화를 동일한 분기로 통합
+    # HOME은 실제 IDLE 도착까지 긴급 화면에서 기다리고, RESUME은 이전 단계의 진행 바를 복원
+    # 큐 정리와 처리 플래그를 함께 사용해 과거 이벤트 재처리 및 RESET 중복 호출도 방지
     def _can_resume_after_dump(self):
         """음식물 배출 완료 체크포인트부터만 남은 공정 재개를 허용합니다."""
         resumable_stages = {
@@ -762,10 +805,70 @@ class FoodWasteGUI:
         }
         return self.recovery_stage in resumable_stages
 
+    def recover_from_admin(self):
+        """관리자 초기화 요청도 사용자 긴급정지 버튼과 동일한 체크포인트 분기로 처리합니다."""
+        if self._pending_recovery_action is not None:
+            return
+        if self._can_resume_after_dump():
+            self._resume_after_emergency()
+        else:
+            self._return_home_after_emergency()
+
+    def _discard_queued_events(self):
+        """새 복구 요청 전에 쌓인 과거 상태와 안전 이벤트만 제거합니다."""
+        while not self.event_queue.empty():
+            try:
+                self.event_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _return_home_after_emergency(self):
+        """배출 전 긴급정지에서 RESET 복귀를 수행하고 실제 IDLE 도착 후 시작 화면을 표시합니다."""
+        try:
+            self.error_home_btn.configure(state="disabled", text="원위치 복귀 중...")
+            self._discard_queued_events()
+            self._ignore_safety_before = time.time()
+            self._pending_recovery_action = "HOME"
+            self.emergency_stop = False
+            response = self.api_service.reset_robot_system()
+            if response is None or not (200 <= response.status_code < 300):
+                raise RuntimeError("백엔드가 원위치 복귀 요청을 거절했습니다.")
+            self._restart_process_queue()
+        except Exception as exc:
+            self._pending_recovery_action = None
+            self.emergency_stop = True
+            self.error_home_btn.configure(state="normal", text="처음으로 (HOME)")
+            CTkMessagebox(
+                title="원위치 복귀 실패",
+                message=str(exc),
+                icon="cancel",
+                option_1="확인",
+            )
+
+    def _finish_home_recovery(self):
+        """motion_controller가 RESET 완료로 IDLE을 발행한 뒤에만 시작 화면으로 전환합니다."""
+        self.in_error_state = False
+        self.emergency_stop = False
+        self.is_running = False
+        self._last_step_idx = -1
+        self.recovery_stage = "IDLE"
+        self._received_recovery_stage = False
+        if hasattr(self, "error_bg_frame") and self.error_bg_frame and self.error_bg_frame.winfo_exists():
+            self.error_bg_frame.place_forget()
+            self.error_bg_frame.destroy()
+        self.create_intro_ui()
+        self._restart_process_queue()
+        if self.manager_console:
+            self.manager_console.update_user_status("대기 중 (원위치 복귀 완료)")
+
     def _resume_after_emergency(self):
         """관리자 초기화와 같은 RESET 경로로 배출 이후의 남은 공정을 수행합니다."""
         try:
             self.error_home_btn.configure(state="disabled", text="재개 요청 중...")
+            self._pending_recovery_action = "RESUME"
+            self._resume_session_active = True
+            self._discard_queued_events()
+            self._ignore_safety_before = time.time()
             self.resume_recovery_stage = self.recovery_stage
             response = self.api_service.reset_robot_system()
             if response is None or not (200 <= response.status_code < 300):
@@ -773,10 +876,11 @@ class FoodWasteGUI:
             self.resume_step_idx = self._step_index_for_recovery_stage(self.resume_recovery_stage)
             if self.resume_step_idx is None:
                 self.resume_step_idx = self._last_step_idx
-            self._ignore_safety_before = time.time()
             self.root.after(100, self._show_resumed_process_ui)
         except Exception as exc:
             self.error_home_btn.configure(state="normal", text="동작 재개 (RESUME)")
+            self._pending_recovery_action = None
+            self._resume_session_active = False
             CTkMessagebox(
                 title="동작 재개 실패",
                 message=str(exc),
@@ -789,18 +893,14 @@ class FoodWasteGUI:
         if not self.root.winfo_exists():
             return
 
+        self._pending_recovery_action = None
+
         self.emergency_stop = False
         self.in_error_state = False
 
         if hasattr(self, "error_bg_frame") and self.error_bg_frame and self.error_bg_frame.winfo_exists():
             self.error_bg_frame.place_forget()
             self.error_bg_frame.destroy()
-
-        while not self.event_queue.empty():
-            try:
-                self.event_queue.get_nowait()
-            except queue.Empty:
-                break
 
         step = max(0, min(getattr(self, "resume_step_idx", 0), len(self.steps) - 1))
         self.create_process_ui()

@@ -219,6 +219,8 @@ def set_recovery_stage(stage: RecoveryStage, msg: str = ""):
     global _process_stage
     with _stage_lock:
         _process_stage = stage
+    # [branch_motion.py 대비 추가] 체크포인트가 바뀔 때마다 HMI용 복구 단계 토픽도 함께 발행
+    # 기존에는 노드 내부에만 단계가 남아 HMI가 배출 전 HOME과 배출 후 RESUME을 구분할 수 없었음
     if status is not None:
         status.publish_recovery_stage(stage)
     if msg:
@@ -273,6 +275,8 @@ def coordinates():
         "wash_approach_j": posj(0.92, 38.79, 130.96, 180.1, 78.8, -89.2),
         "wash_place": posx(0, 0, 45, 0, 0, 0),
         # 수도꼭지 컨트롤
+        # [branch_motion.py 대비 수정] 실제 밸브 접근 자세에 맞춰 보정된 현재 관절 좌표입니다.
+        # 기존 좌표(-16.92, 52.98, 31.28, 50.5, 101.02, -56.09)를 대체합니다.
         "wash_app_j": posj(-11.23, 50.7, 25.46, 36.49, 101.75, -56.09),
         "wash_open": posx(0, 0, 0, -140, 0, 0),
         "wash_close": posx(0, 0, 0, 140, 0, 0),
@@ -395,6 +399,7 @@ class StatusBus:
         self.state_pub = node.create_publisher(String, "/robot/process_state", 10)
         self.motion_pub = node.create_publisher(String, "/robot/motion_status", 10)
         self.safety_pub = node.create_publisher(String, "/robot/safety_event", 10)
+        # [branch_motion.py 대비 추가] 로봇 내부 RecoveryStage를 백엔드/HMI로 전달하는 전용 토픽
         self.recovery_stage_pub = node.create_publisher(String, "/robot/recovery_stage", 10)
         self.gripper_pub = node.create_publisher(Bool, "/gripper/status", 10)
         self.mode_pub = node.create_publisher(Int32, "/hmi/mode_cmd", 10)
@@ -417,6 +422,8 @@ class StatusBus:
         self.safety_pub.publish(String(data=text))
         self.node.get_logger().error(text)
 
+    # [branch_motion.py 대비 추가] Enum 체크포인트를 문자열로 발행해 백엔드가 그대로 중계할 수 있게 함
+    # 공정 상태 설명 문구와 분리했기 때문에 "재파지" 같은 단어로 단계가 오인되는 문제도 방지
     def publish_recovery_stage(self, stage: RecoveryStage):
         """HMI가 배출 완료 이후인지 정확히 판단할 수 있도록 복구 체크포인트를 발행한다."""
         self.recovery_stage_pub.publish(String(data=stage.value))
@@ -897,6 +904,7 @@ def execute_wash():
     set_recovery_stage(RecoveryStage.WASH_WAYPOINT_REACHED, "세척 위치 이탈 후 경유점 도착")
     set_recovery_stage(RecoveryStage.WATER_VALVE_APPROACHING, "세척수 밸브 위치 이동 중")
     safe_movej(coords["wash_app_j"])
+    # [branch_motion.py 대비 추가] 밸브 접근 이동의 잔여 진동이 가라앉은 뒤 파지하도록 안정화 시간을 둡니다.
     safe_wait(1.0)
     set_recovery_stage(RecoveryStage.WATER_VALVE_READY, "세척수 밸브 위치 도착 - 파지 전")
     set_recovery_stage(RecoveryStage.WATER_VALVE_GRASPING, "세척수 밸브 파지 중")
@@ -915,6 +923,7 @@ def execute_wash():
     set_recovery_stage(RecoveryStage.WATER_VALVE_RETURNING, "세척수 밸브 복귀 동작 중")
     safe_movel_relative(coords["wash_open"])
     set_recovery_stage(RecoveryStage.WATER_VALVE_RETURNED, "세척수 밸브 복귀 완료")
+    # [branch_motion.py 대비 추가] 밸브 복귀 직후 바로 그리퍼를 열지 않도록 1초 대기합니다.
     safe_wait(1.0)
     gripper_open()
     set_recovery_stage(RecoveryStage.WATER_IN_BIN, "세척수 주입 완료")
@@ -1325,8 +1334,15 @@ def recover_after_emergency_stop():
     else:
         return_bin_to_home_after_reset("RESET: 세척수 배출 완료 상태 - 수거통 원위치 후 초기 위치 복귀")
 
-    set_recovery_stage(RecoveryStage.IDLE, "RESET 복구 완료")
-    status.set_state(ProcessState.IDLE, "RESET 완료 - 분기 복구 후 초기 위치 복귀")
+    # [branch_motion.py 대비 수정] RESET 종료를 무조건 IDLE로 보내던 동작을 공정 의미에 맞게 분리
+    # 배출 이후 남은 세척·배수·복귀까지 수행했으면 COMPLETE/작업 완료로 알리고,
+    # 배출 전 안전 복귀만 수행한 경우에만 IDLE/원위치 복귀 완료로 알림
+    if recovery_stage_at_least(stage, RecoveryStage.WASTE_DUMPED):
+        set_recovery_stage(RecoveryStage.COMPLETE, "중단된 후속 공정 복구 완료")
+        status.set_state(ProcessState.COMPLETE, "작업 완료")
+    else:
+        set_recovery_stage(RecoveryStage.IDLE, "RESET 원위치 복귀 완료")
+        status.set_state(ProcessState.IDLE, "원위치 복귀 완료")
 
 
 # 배출/세척 전체 공정을 1~5단계 순서대로 실행하는 최상위 공정 함수

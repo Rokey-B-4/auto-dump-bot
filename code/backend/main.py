@@ -47,7 +47,12 @@ async def _queue_consumer_loop() -> None:
         "process_state": "대기 중 (사용자 이용 전)",
         "task_id": None,
         "gripper_state": "UNKNOWN",
+
+        # [백업 대비 추가] 로봇이 긴급정지된 정확한 공정 체크포인트를 보관
+        # 기존에는 화면용 process_state만 있어 배출 전/후를 정확히 구분할 수 없었음
+        # 이 값으로 HMI가 HOME 복귀와 중단 공정 재개를 안전하게 분기
         "recovery_stage": "IDLE",
+
         "joints": {"J1": 0.0, "J2": 0.0, "J3": 0.0, "J4": 0.0, "J5": 0.0, "J6": 0.0},
     }
 
@@ -69,8 +74,12 @@ async def _queue_consumer_loop() -> None:
                         "error_msg": raw_ros_data.get("error_msg"),
                         "timestamp": raw_ros_data.get("timestamp", time.time()),
                     }
+
+                # [백업 대비 추가] robot_bridge가 전달한 RecoveryStage를 최신 상태 캐시에 반영
+                # 긴급정지 직후에도 마지막 안전 체크포인트가 유지되므로 RESET 복구 기준이 사라지지 않음
                 elif msg_type == "RECOVERY_STAGE":
                     latest_status["recovery_stage"] = raw_ros_data.get("stage", latest_status["recovery_stage"])
+                
                 # MOTION_STATUS, joints 갱신용 토픽이 추가되면 여기에 elif로 계속 확장
 
                 # 3) 현재 GUI(process_queue)가 인식하는 형태로 PROCESS_STATE 브로드캐스트
@@ -88,6 +97,10 @@ async def _queue_consumer_loop() -> None:
                         "error_msg": raw_ros_data.get("error_msg"),
                         "timestamp": raw_ros_data.get("timestamp", time.time()),
                     })
+                    
+                # [백업 대비 추가] 복구 단계 변경을 HMI에 즉시 전송
+                # HMI는 이 이벤트로 진행 바를 갱신하고, WASTE_DUMPED 전에는 HOME 복귀,
+                # 이후에는 남은 세척·배수·복귀 동작 재개로 버튼과 화면을 전환
                 elif msg_type == "RECOVERY_STAGE":
                     await connection_manager.broadcast({
                         "type": "RECOVERY_STAGE",
