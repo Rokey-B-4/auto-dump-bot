@@ -400,6 +400,21 @@ class FoodWasteGUI:
         )
         btn2.grid(row=0, column=1, padx=30, pady=30, sticky="nsew")
 
+        # 모드 선택을 취소하면 작업을 시작하지 않고 인트로 화면으로 돌아갑니다.
+        mode_back_btn = ctk.CTkButton(
+            self.main_container,
+            text="이전으로",
+            width=220,
+            height=48,
+            font=("맑은 고딕", 15, "bold"),
+            fg_color="#3e475e",
+            hover_color="#566176",
+            text_color="#ffffff",
+            corner_radius=12,
+            command=self.create_intro_ui,
+        )
+        mode_back_btn.place(relx=0.5, rely=0.92, anchor="center")
+
     def go_to_placement_guide(self, mode):
         self.selected_mode = mode
         self.create_placement_guide_ui()
@@ -438,7 +453,22 @@ class FoodWasteGUI:
             corner_radius=12, 
             command=self.verify_and_start_process
         )
-        next_btn.pack(side="left", padx=12)
+        next_btn.pack(pady=(0, 12))
+
+        # 아직 START API를 호출하기 전이므로 선택한 모드를 다시 고를 수 있게 돌아갑니다.
+        placement_back_btn = ctk.CTkButton(
+            btn_frame,
+            text="이전으로",
+            width=240,
+            height=48,
+            font=("맑은 고딕", 14, "bold"),
+            fg_color="#3e475e",
+            hover_color="#566176",
+            text_color="#ffffff",
+            corner_radius=12,
+            command=self.create_mode_selection_ui,
+        )
+        placement_back_btn.pack()
 
     def show_placement_error(self):
         error_message = (
