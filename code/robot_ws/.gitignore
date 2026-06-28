@@ -1,8 +1,8 @@
 # Python 관련 임시 파일
-__pycache__/
+__pycache__
 *.pyc
 
 # ROS2 빌드 및 로그 관련 폴더 (협업 시 각자 빌드해야 함)
-build/
-install/
-log/
+build
+install
+log

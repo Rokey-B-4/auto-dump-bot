@@ -580,18 +580,30 @@ class ManagerGUI:
     # =========================================================================
     # [SECTION 8] 비상 제어 / 복구 로직
     # =========================================================================
+    # [백업 대비 수정] 관리자가 RESET API를 직접 호출하던 구조 제거
+    # 직접 호출 후 사용자 reset_callback까지 실행하면 RESET이 중복 발행되고,
+    # 사용자 창의 배출 전 HOME/배출 후 RESUME 분기가 무시되는 문제가 있음
+    # 현재는 사용자 HMI의 공용 복구 진입점에 위임해 두 창이 같은 RecoveryStage 기준으로 동작
     def execute_system_recovery(self):
-        """시스템 복구 요청"""
+        """관리자 복구도 사용자 창의 RecoveryStage 기반 HOME/RESUME 분기로 요청합니다."""
         try:
             self.save_error_log("[SYSTEM] 복구 승인")
-            response = self.api.reset_robot_system()
-            if response is None or response.status_code != 200:
-                raise Exception("백엔드 서버 연결 실패")
-            # 서버 성공 시에만 복구 UI 실행
-            self.window.after(
-                100,
-                self._safe_execute_recovery
-            )
+            # [백업 대비 추가] 사용자 창과 복구 인터페이스가 실제로 존재하는지 먼저 확인
+            # 긴급정지 상태가 아닌데 초기화가 실행되어 로봇이 불필요하게 움직이는 것도 차단
+            if not self.main_gui or not hasattr(self.main_gui, "recover_from_admin"):
+                raise Exception("사용자 HMI 복구 인터페이스를 찾을 수 없습니다.")
+            if not (self.main_gui.emergency_stop or self.main_gui.in_error_state):
+                raise Exception("현재 사용자 HMI가 긴급정지 상태가 아닙니다.")
+
+            # [백업 대비 추가] 현재 RecoveryStage가 WASTE_DUMPED 이후이면 남은 공정을 재개하고,
+            # 이전이면 수거통/로봇을 원위치로 복귀시키는 분기를 선택
+            can_resume = self.main_gui._can_resume_after_dump()
+            recovery_text = "동작 재개 요청 중" if can_resume else "원위치 복귀 중"
+            self.current_user_status_text = recovery_text
+
+            # RESET API와 화면 전환은 사용자 HMI의 공용 분기에서 한 번만 수행
+            self.main_gui.root.after(0, self.main_gui.recover_from_admin)
+            self.window.after(100, lambda: self._show_delegated_recovery_status(recovery_text))
 
         except requests.ConnectionError:
             self.save_error_log("[ERROR] 백엔드 연결 실패")
@@ -610,6 +622,20 @@ class ManagerGUI:
                 icon="cancel"
             )
             
+    # [백업 대비 추가] 실제 RESET과 사용자 화면 전환은 main_gui가 담당하고,
+    # 관리자 창은 선택된 HOME/RESUME 상태를 모니터링 화면에 표시하는 역할만 수행
+    # 이렇게 분리해 관리자 창이 사용자 위젯을 직접 파괴하면서 발생하던 화면 경쟁도 방지
+    def _show_delegated_recovery_status(self, recovery_text):
+        """사용자 HMI에 위임한 복구 분기에 맞춰 관리자 모니터 화면만 갱신합니다."""
+        if not self.window.winfo_exists():
+            return
+        self.show_tab("진행 상태 모니터링")
+        if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
+            self.lbl_monitor_status.configure(
+                text=f"🔄 {recovery_text}",
+                text_color="#4fa3e3",
+            )
+
     def _safe_execute_recovery(self):
         """🚨 [CRITICAL PATCH] Segmentation Fault (코어 덤프) 원천 차단 복구 엔진"""
         try:
