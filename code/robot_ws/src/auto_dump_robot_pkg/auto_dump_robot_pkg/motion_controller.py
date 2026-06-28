@@ -821,15 +821,17 @@ def run_periodic_dump_shake(mode):
     if mode == DUMP_MODE_NORMAL:
         amp = DUMP_NORMAL_PERIODIC_AMP
         period = DUMP_NORMAL_PERIOD
+        status_text = "일반 털기"
     elif mode == DUMP_MODE_STRONG:
         amp = DUMP_STRONG_PERIODIC_AMP
         period = DUMP_STRONG_PERIOD
+        status_text = "강하게 털기"
     else:
         raise ValueError("dump mode must be 1(normal) or 2(strong)")
 
     status.set_state(
         ProcessState.DUMPING,
-        f"periodic shaking {SHAKE_REPEAT_COUNT} cycles",
+        status_text,
     )
     safe_move_periodic(
         amp=amp,
@@ -872,7 +874,7 @@ def run_periodic_water_shake():
     """water_out_tilt 자세를 중심으로 Tool X축 주기 운동을 수행한다."""
     status.set_state(
         ProcessState.WASHING,
-        f"periodic water shaking {SHAKE_REPEAT_COUNT} cycles",
+        f"물기 털기",
     )
     safe_move_periodic(
         amp=WATER_PERIODIC_AMP,

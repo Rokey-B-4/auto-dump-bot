@@ -519,7 +519,7 @@ class FoodWasteGUI:
         title = ctk.CTkLabel(title_frame, text="PROCESS SYSTEM PROCESSING...", font=("NanumGothic", 32, "bold"), text_color="#ffffff")
         title.pack()
 
-        mode_names = {1: "일반 배출 + 세척", 2: "강한 흔들기 + 세척"}
+        mode_names = {1: "일반 배출 + 세척", 2: "강한 털기 + 세척"}
         current_mode_name = mode_names.get(self.selected_mode, "알 수 없는 유형")
         
         self.process_subtitle = ctk.CTkLabel(title_frame, text=f"선택 유형 :   {current_mode_name}", font=("NanumGothic", 15, "bold"), text_color="#4fa3e3")
@@ -585,7 +585,7 @@ class FoodWasteGUI:
 
     def _reset_process_page(self):
         """캐시된 공정 화면을 새 작업의 초기 표시 상태로 되돌립니다."""
-        mode_names = {1: "일반 배출 + 세척", 2: "강한 흔들기 + 세척"}
+        mode_names = {1: "일반 배출 + 세척", 2: "강한 털기 + 세척"}
         current_mode_name = mode_names.get(self.selected_mode, "알 수 없는 유형")
         self.process_subtitle.configure(text=f"선택 유형 :   {current_mode_name}")
         self.status.configure(text="준비 완료", text_color="#ffffff")
