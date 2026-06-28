@@ -1,0 +1,34 @@
+digraph architecture {
+  rankdir=TB;
+  graph [fontname="Noto Sans CJK KR", fontsize=14, label="motion_controller.py 전체 아키텍처", labelloc=t];
+  node  [fontname="Noto Sans CJK KR", shape=box, style="rounded,filled", fontsize=11];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10];
+
+  subgraph cluster_ext {
+    label="외부 (HMI / 백엔드)"; style=filled; color="#eef4ff"; fontname="Noto Sans CJK KR";
+    HMI [label="HMI 앱 / 웹", fillcolor="#cfe2ff"];
+    BE  [label="FastAPI robot_bridge", fillcolor="#cfe2ff"];
+  }
+
+  subgraph cluster_mc {
+    label="motion_controller.py (ros2 run ... motion)"; style=filled; color="#eafbe7"; fontname="Noto Sans CJK KR";
+    CMD  [label="node: food_waste_dump_robot\n명령 구독 + 상태 발행", fillcolor="#c7f0c2"];
+    DSRN [label="node: ..._dsr\nDSR 모션/그리퍼 API", fillcolor="#c7f0c2"];
+    STOP [label="node: ..._stop\n정지/상태조회 서비스", fillcolor="#c7f0c2"];
+    SB   [label="StatusBus\n(상태 토픽 발행)", fillcolor="#9fe39a"];
+  }
+
+  subgraph cluster_hw {
+    label="하드웨어"; style=filled; color="#fff2e0"; fontname="Noto Sans CJK KR";
+    DSR [label="두산 DSR 컨트롤러", fillcolor="#ffd9a0"];
+    RG2 [label="OnRobot RG2 그리퍼", fillcolor="#ffd9a0"];
+  }
+
+  HMI -> BE;
+  BE  -> CMD  [label="/robot/command (JSON)"];
+  CMD -> SB;
+  SB  -> BE   [label="상태 토픽 6종", style=dashed];
+  DSRN -> DSR [label="movej/movel/force ..."];
+  DSRN -> RG2 [label="SetCommand o/c"];
+  STOP -> DSR [label="MoveStop / GetRobotState"];
+}
