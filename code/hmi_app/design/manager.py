@@ -182,10 +182,10 @@ class ManagerGUI:
         sb_title.pack(pady=(35, 35))
 
         menus = [
-            ("진행 상태 모니터링", "MONITOR"),
-            ("안전 시스템 관리", "SAFETY"),
-            ("하드웨어 수동 제어", "ROBOT"),
-            ("시스템 로그 관리", "LOG")
+            ("진행 상태 모니터링", ""),
+            ("안전 시스템 관리", ""),
+            ("하드웨어 수동 제어", ""),
+            ("시스템 로그 관리", "")
         ]
 
         for menu_name, icon in menus:
@@ -259,7 +259,7 @@ class ManagerGUI:
     # =========================================================================
     def view_progress_monitoring(self):
         """TAB 1: 로봇 공정 실시간 진행 대시보드"""
-        title = ctk.CTkLabel(self.main_content_area, text="MONITOR 로봇 공정 실시간 진행 상태", font=("NanumGothic", 22, "bold"), text_color="#ffffff")
+        title = ctk.CTkLabel(self.main_content_area, text=" 로봇 공정 실시간 진행 상태", font=("NanumGothic", 22, "bold"), text_color="#ffffff")
         title.pack(anchor="w", padx=35, pady=(30, 20))
 
         # 1. 상태 레이블 블록
@@ -293,7 +293,7 @@ class ManagerGUI:
         stats_card = ctk.CTkFrame(self.main_content_area, fg_color="#2d3343", corner_radius=12)
         stats_card.pack(fill="both", expand=True, padx=35, pady=(10, 30))
 
-        lbl_stats_title = ctk.CTkLabel(stats_card, text="STATUS 누적 장비 가동 통계", font=("NanumGothic", 13, "bold"), text_color="#ffffff")
+        lbl_stats_title = ctk.CTkLabel(stats_card, text=" 누적 장비 가동 통계", font=("NanumGothic", 13, "bold"), text_color="#ffffff")
         lbl_stats_title.pack(anchor="w", padx=20, pady=(15, 10))
 
         self.lbl_counter = ctk.CTkLabel(stats_card, text=f"총 누적 배출 공정 횟수 :   {self.total_cycles} 회", font=("DejaVu Sans Mono", 16, "bold"), text_color="#00fa9a")
@@ -301,14 +301,14 @@ class ManagerGUI:
 
     def view_safety_management(self):
         """TAB 2: 안전 인터록 대응 및 시스템 조치 복구 스크린"""
-        title = ctk.CTkLabel(self.main_content_area, text="SAFETY 안전 제어 및 시스템 복구 조작", font=("NanumGothic", 22, "bold"), text_color="#ffffff")
+        title = ctk.CTkLabel(self.main_content_area, text=" 안전 제어 및 시스템 복구 조작", font=("NanumGothic", 22, "bold"), text_color="#ffffff")
         title.pack(anchor="w", padx=30, pady=(30, 20))
 
         is_error = any(word in self.current_user_status_text for word in ["오류", "중단", "탈락"])
         card_bg_col = "#4c1f24" if is_error else "#2d3343"
         border_col = "#ff4d6d" if is_error else "#3e475e"
         title_col = "#ff4d6d" if is_error else "#4fa3e3"
-        title_text = "EMERGENCY 긴급 시스템 잠금 활성화 (비상 인터록 가동 중)" if is_error else "SAFETY 시스템 안전 상태 보장됨"
+        title_text = "[EMERGENCY] 긴급 시스템 잠금 활성화 (비상 인터록 가동 중)" if is_error else "SAFETY 시스템 안전 상태 보장됨"
 
         safety_frame = ctk.CTkFrame(self.main_content_area, fg_color=card_bg_col, corner_radius=12, border_width=2, border_color=border_col)
         safety_frame.pack(fill="both", expand=True, padx=30, pady=(10, 30))
@@ -317,7 +317,7 @@ class ManagerGUI:
         lbl_sec_title.pack(anchor="w", padx=20, pady=(20, 10))
 
         status_guide = (
-            "WARNING [CRITICAL EMERGENCY INTERLOCK]\n\n"
+            "[WARNING] [CRITICAL EMERGENCY INTERLOCK]\n\n"
             "사용자 단말기 측에서 '수거통 탈락' 혹은 '원격 강제 중단' 신호가 수신되었습니다.\n"
             "공정이 강제 중단된 상태입니다.\n\n"
             "원격 제어 조치 사항:\n"
@@ -342,14 +342,14 @@ class ManagerGUI:
         info_box.pack(padx=20, pady=10, fill="x")
 
         reset_system_btn = ctk.CTkButton(
-            safety_frame, text="RESET 인터록 해제 및 시스템 완전 초기화 (Emergency Recovery)", height=55, font=("NanumGothic", 14, "bold"),
+            safety_frame, text=" 인터록 해제 및 시스템 완전 초기화 (Emergency Recovery)", height=55, font=("NanumGothic", 14, "bold"),
             fg_color="#00fa9a", hover_color="#00c77b", text_color="#14171c", corner_radius=10, command=self.execute_system_recovery
         )
         reset_system_btn.pack(fill="x", padx=20, pady=25, side="bottom")
 
     def view_hardware_override(self):
         """TAB 3: 협동로봇 무인 6축 수동 조작 및 서보 관절 오버라이드 패널"""
-        title = ctk.CTkLabel(self.main_content_area, text="ROBOT M0609 협동로봇 관절별 수동 제어 (Joint Override)", font=("NanumGothic", 22, "bold"), text_color="#ffffff")
+        title = ctk.CTkLabel(self.main_content_area, text=" M0609 협동로봇 관절별 수동 제어 (Joint Override)", font=("NanumGothic", 22, "bold"), text_color="#ffffff")
         title.pack(anchor="w", padx=30, pady=(25, 15))
 
         scroll_frame = ctk.CTkScrollableFrame(self.main_content_area, fg_color="#2d3343", corner_radius=12)
@@ -401,10 +401,10 @@ class ManagerGUI:
         btn_zone = ctk.CTkFrame(tool_frame, fg_color="transparent")
         btn_zone.pack(fill="x", padx=15, pady=(0, 15))
 
-        ctk.CTkButton(btn_zone, text="OPEN 그리퍼 개방 (OPEN)", height=42, fg_color="#333b4c", hover_color="#1f7ecb", font=("NanumGothic", 12, "bold"), command=lambda: self.control_hardware_action("그리퍼 OPEN")).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ctk.CTkButton(btn_zone, text="CLOSE 그리퍼 파지 (CLOSE)", height=42, fg_color="#333b4c", hover_color="#ff4d6d", font=("NanumGothic", 12, "bold"), command=lambda: self.control_hardware_action("그리퍼 CLOSE")).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ctk.CTkButton(btn_zone, text="SEND 관절각 일괄 전송 (MoveJ)", height=42, fg_color="#1f7ecb", hover_color="#145a93", font=("NanumGothic", 12, "bold"), command=self.send_all_joints_command).pack(side="left", expand=True, fill="x", padx=(0, 6))
-        ctk.CTkButton(btn_zone, text="RESET 로봇 원상복구 (Go Home)", height=42, fg_color="#d9534f", hover_color="#c9302c", font=("NanumGothic", 12, "bold"), command=self.reset_all_joints).pack(side="left", expand=True, fill="x")
+        ctk.CTkButton(btn_zone, text=" 그리퍼 개방 (OPEN)", height=42, fg_color="#333b4c", hover_color="#1f7ecb", font=("NanumGothic", 12, "bold"), command=lambda: self.control_hardware_action("그리퍼 OPEN")).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(btn_zone, text=" 그리퍼 파지 (CLOSE)", height=42, fg_color="#333b4c", hover_color="#ff4d6d", font=("NanumGothic", 12, "bold"), command=lambda: self.control_hardware_action("그리퍼 CLOSE")).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(btn_zone, text=" 관절각 일괄 전송 (MoveJ)", height=42, fg_color="#1f7ecb", hover_color="#145a93", font=("NanumGothic", 12, "bold"), command=self.send_all_joints_command).pack(side="left", expand=True, fill="x", padx=(0, 6))
+        ctk.CTkButton(btn_zone, text=" 로봇 원상복구 (Go Home)", height=42, fg_color="#d9534f", hover_color="#c9302c", font=("NanumGothic", 12, "bold"), command=self.reset_all_joints).pack(side="left", expand=True, fill="x")
 
     def view_log_management(self):
         """TAB 4: 로컬 디스크 에러 로깅 기록 트래킹 보드"""
@@ -504,7 +504,7 @@ class ManagerGUI:
             self.save_error_log("[RECOVERY_ACTION] Home Position 이동 성공")
             CTkMessagebox(
                 title="원상복구 완료",
-                message="OK 로봇이 Home 위치로 복귀했습니다.",
+                message="[OK] 로봇이 Home 위치로 복귀했습니다.",
                 icon="check",
                 corner_radius=12
             )
@@ -513,7 +513,7 @@ class ManagerGUI:
             self.save_error_log(f"[ERROR] {str(e)}")
             CTkMessagebox(
                 title="원상복구 실패",
-                message=f"ERROR {str(e)}",
+                message=f"[ERROR] {str(e)}",
                 icon="cancel",
                 corner_radius=12
             )
@@ -529,7 +529,7 @@ class ManagerGUI:
         
         # 3. 서버 응답 확인 
         if response is None or not response.ok:
-            CTkMessagebox(title="통신 오류", message="ERROR 백엔드 서버와 연결할 수 없습니다.", icon="cancel")
+            CTkMessagebox(title="통신 오류", message="[ERROR] 백엔드 서버와 연결할 수 없습니다.", icon="cancel")
             return
 
         # 4. UI 및 로그 피드백 업데이트
@@ -538,11 +538,11 @@ class ManagerGUI:
         def safe_ui_update():
             if not self.window.winfo_exists(): return
             if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
-                self.lbl_monitor_status.configure(text="CONTROL 수동 관절 제어 명령 수행 중", text_color="#f1c40f")
+                self.lbl_monitor_status.configure(text="[CONTROL] 수동 관절 제어 명령 수행 중", text_color="#f1c40f")
             
             CTkMessagebox(
                 title="전송 완료",
-                message="OK 관절각 데이터가 로봇 서버로 일괄 전송되었습니다.",
+                message="[OK] 관절각 데이터가 로봇 서버로 일괄 전송되었습니다.",
                 icon="check",
                 option_1="확인",
                 corner_radius=12
@@ -564,11 +564,11 @@ class ManagerGUI:
                 raise Exception("서버 응답 오류 또는 연결 실패")
 
             self.save_error_log(f"[MANUAL] 제어 성공: {action_name}")
-            CTkMessagebox(title="수동 제어 성공", message=f"OK {action_name} 명령 전달 완료", icon="check", corner_radius=12)
+            CTkMessagebox(title="수동 제어 성공", message=f"[OK] {action_name} 명령 전달 완료", icon="check", corner_radius=12)
 
         except Exception as e:
             self.save_error_log(f"[ERROR] {str(e)}")
-            CTkMessagebox(title="명령 실패", message=f"ERROR {str(e)}", icon="cancel", corner_radius=12)
+            CTkMessagebox(title="명령 실패", message=f"[ERROR] {str(e)}", icon="cancel", corner_radius=12)
 
     def _sync_slider_to_entry(self, value, entry_widget):
         if entry_widget.winfo_exists():
@@ -617,7 +617,7 @@ class ManagerGUI:
             self.save_error_log("[ERROR] 백엔드 연결 실패")
             CTkMessagebox(
                 title="연결 실패",
-                message="ERROR 백엔드 서버와 연결되어 있지 않습니다.",
+                message="[ERROR] 백엔드 서버와 연결되어 있지 않습니다.",
                 icon="cancel"
             )
         except Exception as e:
@@ -626,7 +626,7 @@ class ManagerGUI:
             )
             CTkMessagebox(
                 title="복구 실패",
-                message=f"ERROR {str(e)}",
+                message=f"[ERROR] {str(e)}",
                 icon="cancel"
             )
             
@@ -640,12 +640,12 @@ class ManagerGUI:
         self.show_tab("진행 상태 모니터링")
         if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
             self.lbl_monitor_status.configure(
-                text=f"RESET {recovery_text}",
+                text=f"[RESET] {recovery_text}",
                 text_color="#4fa3e3",
             )
 
     def _safe_execute_recovery(self):
-        """EMERGENCY [CRITICAL PATCH] Segmentation Fault (코어 덤프) 원천 차단 복구 엔진"""
+        """[EMERGENCY] [CRITICAL PATCH] Segmentation Fault (코어 덤프) 원천 차단 복구 엔진"""
         try:
             # 안전장치: 복구 진입 시점에 관리자 창이 이미 닫혔다면 수행 중단
             if not self.window.winfo_exists():
@@ -671,7 +671,7 @@ class ManagerGUI:
                 # 4단계: 탭이 바뀐 후 위젯이 완벽히 생성되었는지 '다시 확인'하고 텍스트 주입
                 if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
                     self.lbl_monitor_status.configure(
-                        text="OPEN 시스템 복구 완료 (대기 중)", 
+                        text=" 시스템 복구 완료 (대기 중)", 
                         text_color="#00fa9a"
                     )
             
