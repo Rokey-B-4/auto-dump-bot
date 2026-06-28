@@ -59,9 +59,12 @@ class FoodWasteGUI:
         self.steps = ["통 파지", "배출 위치 이동", "음식물 배출", "세척 중", "초기 위치 복귀", "작업 완료"]
         self.step_labels = []
         
-        # [메인 컨테이너] 화면 전활 시 관리자 창 유실 방지용 부모 프레임
-        self.main_container = ctk.CTkFrame(self.root, fg_color="transparent")
-        self.main_container.pack(fill="both", expand=True)
+        # 실제 창 안의 고정 호스트. 각 화면 프레임은 여기에서 한 번만 생성됩니다.
+        self._page_host = ctk.CTkFrame(self.root, fg_color="transparent")
+        self._page_host.pack(fill="both", expand=True)
+        self._pages = {}
+        self._current_page = None
+        self.main_container = self._page_host
         
         # 관리자 콘솔 가동 (인스턴스 연동)
         self.manager_console = ManagerGUI(self.reset_system, self)
@@ -270,35 +273,29 @@ class FoodWasteGUI:
     # ========================================================
     # 3. 코어 유틸리티 및 안전 매커니즘 시스템
     # ========================================================
-    def clear_root(self):
-        """현재 메인 컨테이너 내부의 모든 유저 인터페이스 위젯 제거 (세그폴트 최전방 핵심 방어선)"""
-        ## ---------------------------------------------------------------------
-        ## CRITICAL FIX 1: 유령 대기 after 루프들을 선제 박멸하여 파괴된 위젯 접근 원천 봉쇄
-        ## ---------------------------------------------------------------------
+    def clear_root(self, page_name):
+        """현재 페이지를 숨기고 대상 페이지를 표시합니다. 위젯은 삭제하지 않습니다."""
         for after_id in self._active_after_ids:
             try:
                 self.root.after_cancel(after_id)
-            except:
+            except Exception:
                 pass
         self._active_after_ids.clear()
 
-        ## ---------------------------------------------------------------------
-        ## CRITICAL FIX 2: 기존의 괄호 유실 등 문법 불안 정정 및 다이렉트 위젯 파괴 메커니즘 고도화
-        ## ---------------------------------------------------------------------
-        if hasattr(self, "main_container") and self.main_container.winfo_exists():
-            for widget in self.main_container.winfo_children():
-                try:
-                    if widget.winfo_exists():
-                        widget.pack_forget()
-                        widget.place_forget()
-                        widget.grid_forget()
-                        widget.destroy()
-                except Exception as e:
-                    print(f"Widget destroy safe catch: {e}")
-                    
-        # 파괴된 포인터의 잔여 가비지 초기화
-        self.status = None
-        self.progress = None
+        current = self._pages.get(self._current_page)
+        if current is not None and current.winfo_exists():
+            current.pack_forget()
+
+        page = self._pages.get(page_name)
+        page_exists = page is not None and page.winfo_exists()
+        if not page_exists:
+            page = ctk.CTkFrame(self._page_host, fg_color="transparent")
+            self._pages[page_name] = page
+
+        page.pack(fill="both", expand=True)
+        self.main_container = page
+        self._current_page = page_name
+        return page_exists
 
     def _restart_process_queue(self):
         """비상정지로 끊긴 유저 UI 이벤트 큐 루프를 중복 없이 재시작합니다."""
@@ -325,12 +322,13 @@ class FoodWasteGUI:
     def create_intro_ui(self):
         self.in_error_state = False
         self.emergency_stop = False
-        self.clear_root()
+        if self.clear_root("intro"):
+            return
         
         intro_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         intro_frame.place(relx=0.5, rely=0.5, anchor="center")
 
-        main_title = ctk.CTkLabel(intro_frame, text="쓰레기 배출 시스템", font=("맑은 고딕", 46, "bold"), text_color="#ffffff")
+        main_title = ctk.CTkLabel(intro_frame, text="쓰레기 배출 시스템", font=("NanumGothic", 46, "bold"), text_color="#ffffff")
         main_title.pack(pady=(0, 10))
 
         sub_title = ctk.CTkLabel(intro_frame, text="Auto Dump Bot", font=("Arial", 16, "bold"), text_color="#4fa3e3")
@@ -341,7 +339,7 @@ class FoodWasteGUI:
             text="시작하기 (START)", 
             width=340, 
             height=65, 
-            font=("맑은 고딕", 18, "bold"), 
+            font=("NanumGothic", 18, "bold"), 
             fg_color="#1f7ecb", 
             hover_color="#145a93", 
             corner_radius=15, 
@@ -353,16 +351,17 @@ class FoodWasteGUI:
     # VIEW 02: 작업 유형 선택 화면 (Mode Selection UI)
     # ========================================================
     def create_mode_selection_ui(self):
-        self.clear_root()
+        if self.clear_root("mode"):
+            return
         
         # 상단 타이틀 구역
         title_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         title_frame.pack(pady=(80, 20))
 
-        title = ctk.CTkLabel(title_frame, text="작업 유형 선택", font=("맑은 고딕", 36, "bold"), text_color="#ffffff")
+        title = ctk.CTkLabel(title_frame, text="작업 유형 선택", font=("NanumGothic", 36, "bold"), text_color="#ffffff")
         title.pack()
 
-        subtitle = ctk.CTkLabel(title_frame, text="원하시는 배출 방식을 선택해 주세요.", font=("맑은 고딕", 15), text_color="#cbd3dc")
+        subtitle = ctk.CTkLabel(title_frame, text="원하시는 배출 방식을 선택해 주세요.", font=("NanumGothic", 15), text_color="#cbd3dc")
         subtitle.pack(pady=(12, 0))
 
         # 모드 선택 카드 보드
@@ -378,7 +377,7 @@ class FoodWasteGUI:
             text="유형 01\n일반 배출 + 세척", 
             width=340, 
             height=110, 
-            font=("맑은 고딕", 18, "bold"), 
+            font=("NanumGothic", 18, "bold"), 
             fg_color="#1f7ecb", 
             hover_color="#145a93", 
             corner_radius=15, 
@@ -392,7 +391,7 @@ class FoodWasteGUI:
             text="유형 02\n강한 흔들기 + 세척", 
             width=340, 
             height=110, 
-            font=("맑은 고딕", 18, "bold"), 
+            font=("NanumGothic", 18, "bold"), 
             fg_color="#ff4d6d", 
             hover_color="#cc2a49", 
             corner_radius=15, 
@@ -406,7 +405,7 @@ class FoodWasteGUI:
             text="이전으로",
             width=220,
             height=48,
-            font=("맑은 고딕", 15, "bold"),
+            font=("NanumGothic", 15, "bold"),
             fg_color="#3e475e",
             hover_color="#566176",
             text_color="#ffffff",
@@ -423,18 +422,19 @@ class FoodWasteGUI:
     # VIEW 03: 하드웨어 수거통 배치 가이드 화면 (Placement Guide UI)
     # ========================================================
     def create_placement_guide_ui(self):
-        self.clear_root()
+        if self.clear_root("placement"):
+            return
         
         guide_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         guide_frame.place(relx=0.5, rely=0.5, anchor="center")
 
-        icon_label = ctk.CTkLabel(guide_frame, text="🗑", font=("맑은 고딕", 85), text_color="#4fa3e3")
+        icon_label = ctk.CTkLabel(guide_frame, text="BIN", font=("NanumGothic", 85), text_color="#4fa3e3")
         icon_label.pack(pady=(0, 15))
 
-        guide_text = ctk.CTkLabel(guide_frame, text="지정된 위치에 통을 놓아주세요.", font=("맑은 고딕", 32, "bold"), text_color="#ffffff")
+        guide_text = ctk.CTkLabel(guide_frame, text="지정된 위치에 통을 놓아주세요.", font=("NanumGothic", 32, "bold"), text_color="#ffffff")
         guide_text.pack(pady=15)
 
-        sub_guide_text = ctk.CTkLabel(guide_frame, text="로봇이 통을 감지할 수 있도록 올바르게 밀착시켜 주세요.", font=("맑은 고딕", 14), text_color="#cbd3dc")
+        sub_guide_text = ctk.CTkLabel(guide_frame, text="로봇이 통을 감지할 수 있도록 올바르게 밀착시켜 주세요.", font=("NanumGothic", 14), text_color="#cbd3dc")
         sub_guide_text.pack(pady=(0, 50))
 
         # 하단 조작 제어 존
@@ -446,7 +446,7 @@ class FoodWasteGUI:
             text="배치 완료 (다음)", 
             width=240, 
             height=55, 
-            font=("맑은 고딕", 15, "bold"), 
+            font=("NanumGothic", 15, "bold"), 
             fg_color="#00fa9a", 
             hover_color="#00c77b", 
             text_color="#14171c", 
@@ -461,7 +461,7 @@ class FoodWasteGUI:
             text="이전으로",
             width=240,
             height=48,
-            font=("맑은 고딕", 14, "bold"),
+            font=("NanumGothic", 14, "bold"),
             fg_color="#3e475e",
             hover_color="#566176",
             text_color="#ffffff",
@@ -472,12 +472,12 @@ class FoodWasteGUI:
 
     def show_placement_error(self):
         error_message = (
-            "▶ [배치 오류] 통이 감지되지 않았습니다! ◀\n"
+            " [배치 오류] 통이 감지되지 않았습니다! \n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "지정된 위치에 수거통이 없거나 올바르게 밀착되지 않았습니다.\n"
             "수거통의 정렬 상태를 다시 확인한 후 확실하게 밀착시켜 주세요!"
         )
-        msg_box = CTkMessagebox(title="⚠️ 수거통 배치 오류 안내", message=error_message, icon="warning", option_1="확인", corner_radius=12, width=500)
+        msg_box = CTkMessagebox(title="WARNING 수거통 배치 오류 안내", message=error_message, icon="warning", option_1="확인", corner_radius=12, width=500)
         response = msg_box.get()
 
         if response == "확인":
@@ -499,35 +499,40 @@ class FoodWasteGUI:
     # VIEW 04: 실시간 공정 진행 화면 (Process Monitoring UI)
     # =======================================================
     def create_process_ui(self):
-        self.clear_root()
+        page_exists = self.clear_root("process")
         self.in_error_state = False
-        self.step_labels = []
         self._last_step_idx = -1
         # [백업 대비 수정] START 성공 후 진행 화면 생성 과정에서 실행 상태가 False로 덮이던 문제를 고침
         self.is_running = True
         self.emergency_stop = False
 
+        if page_exists:
+            self._reset_process_page()
+            return
+
+        self.step_labels = []
+
         # 1. 상태 메인 대시보드 타이틀 헤더
         title_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         title_frame.pack(pady=(50, 10))
 
-        title = ctk.CTkLabel(title_frame, text="♻ SYSTEM PROCESSING...", font=("맑은 고딕", 32, "bold"), text_color="#ffffff")
+        title = ctk.CTkLabel(title_frame, text="PROCESS SYSTEM PROCESSING...", font=("NanumGothic", 32, "bold"), text_color="#ffffff")
         title.pack()
 
-        mode_names = {1: "일반 배출 + 세척", 2: "강한 흔들기 + 세척"}
+        mode_names = {1: "일반 배출 + 세척", 2: "강한 털기 + 세척"}
         current_mode_name = mode_names.get(self.selected_mode, "알 수 없는 유형")
         
-        subtitle = ctk.CTkLabel(title_frame, text=f"선택 유형 :   {current_mode_name}", font=("맑은 고딕", 15, "bold"), text_color="#4fa3e3")
-        subtitle.pack(pady=(10, 0))
+        self.process_subtitle = ctk.CTkLabel(title_frame, text=f"선택 유형 :   {current_mode_name}", font=("NanumGothic", 15, "bold"), text_color="#4fa3e3")
+        self.process_subtitle.pack(pady=(10, 0))
 
         # 2. 실시간 구동 상태 모니터 레이블
         status_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         status_frame.pack(pady=(40, 5))
 
-        status_title = ctk.CTkLabel(status_frame, text="현재 공정 단계", font=("맑은 고딕", 12, "bold"), text_color="#a8b3c2")
+        status_title = ctk.CTkLabel(status_frame, text="현재 공정 단계", font=("NanumGothic", 12, "bold"), text_color="#a8b3c2")
         status_title.pack()
 
-        self.status = ctk.CTkLabel(status_frame, text="준비 완료", font=("맑은 고딕", 28, "bold"), text_color="#ffffff")
+        self.status = ctk.CTkLabel(status_frame, text="준비 완료", font=("NanumGothic", 28, "bold"), text_color="#ffffff")
         self.status.pack(pady=8)
 
         # 3. 메인 프로세스 진행 바
@@ -548,14 +553,14 @@ class FoodWasteGUI:
                 fg_color="#333b4c", 
                 text_color="#a8b3c2", 
                 corner_radius=12, 
-                font=("맑은 고딕", 13, "bold")
+                font=("NanumGothic", 13, "bold")
             )
             label.pack(side="left", padx=4)
             self.step_labels.append(label)
 
             # 노드 간 방향 화살표
             if i < len(self.steps) - 1:
-                arrow = ctk.CTkLabel(line_frame, text="→", font=("맑은 고딕", 20, "bold"), text_color="#5a677d")
+                arrow = ctk.CTkLabel(line_frame, text="→", font=("NanumGothic", 20, "bold"), text_color="#5a677d")
                 arrow.pack(side="left", padx=5)
 
         # 5. 하단 하드웨어 이벤트 액션 패널
@@ -570,13 +575,33 @@ class FoodWasteGUI:
             text_color="#ffffff", 
             width=260, 
             height=48, 
-            font=("맑은 고딕", 15, "bold"), 
+            font=("NanumGothic", 15, "bold"), 
             corner_radius=12, 
             command=self.create_intro_ui
         )
 
         # [백업 대비 추가] 화면 생성 전에 도착한 최신 로봇 체크포인트를 즉시 진행 표시에 반영
         self.root.after(0, lambda: self._update_ui_from_recovery_stage(self.recovery_stage))
+
+    def _reset_process_page(self):
+        """캐시된 공정 화면을 새 작업의 초기 표시 상태로 되돌립니다."""
+        mode_names = {1: "일반 배출 + 세척", 2: "강한 털기 + 세척"}
+        current_mode_name = mode_names.get(self.selected_mode, "알 수 없는 유형")
+        self.process_subtitle.configure(text=f"선택 유형 :   {current_mode_name}")
+        self.status.configure(text="준비 완료", text_color="#ffffff")
+        self.progress.set(0)
+        for label in self.step_labels:
+            if label.winfo_exists():
+                label.configure(
+                    fg_color="#333b4c",
+                    text_color="#a8b3c2",
+                )
+        if self.home_btn.winfo_exists():
+            self.home_btn.pack_forget()
+        self.root.after(
+            0,
+            lambda: self._update_ui_from_recovery_stage(self.recovery_stage),
+        )
         
 
     # =======================================================
@@ -614,13 +639,13 @@ class FoodWasteGUI:
                 raise requests.RequestException("서버 응답 없음 (None)")
                 
         except Exception as e:
-            # ❌ 진짜 네트워크가 연결되지 않았거나 통신 오류인 상황에만 에러 출력 처리
+            # ERROR 진짜 네트워크가 연결되지 않았거나 통신 오류인 상황에만 에러 출력 처리
             print(f"서버 물리 연결 실패: {e}")
             self.is_running = False
             
             CTkMessagebox(
                 title="시스템 연결 오류", 
-                message="❌ 로봇 제어 서버와 물리적으로 연결되지 않았습니다.\n네트워크 상태 및 서버 구동 여부를 다시 확인해 주세요.", 
+                message="ERROR 로봇 제어 서버와 물리적으로 연결되지 않았습니다.\n네트워크 상태 및 서버 구동 여부를 다시 확인해 주세요.", 
                 icon="cancel"
             )
             return False
@@ -702,7 +727,7 @@ class FoodWasteGUI:
         # 3. 관리자 콘솔 실시간 상태 텍스트 갱신
         if self.manager_console:
             try:
-                self.manager_console.update_user_status("❌ 충돌 감지 — 비상 정지 인터록 가동")
+                self.manager_console.update_user_status("ERROR 충돌 감지 — 비상 정지 인터록 가동")
             except Exception:
                 pass
 
@@ -723,7 +748,7 @@ class FoodWasteGUI:
         self.is_running = False
         
         # 내부 상태 동기화 메시지 송신
-        status_msg = "❌ 외력 충돌로 인한 시스템 셧다운" if is_collision else "🚨 사용자 수동 비상 정지 상태"
+        status_msg = "ERROR 외력 충돌로 인한 시스템 셧다운" if is_collision else "EMERGENCY 사용자 수동 비상 정지 상태"
         self.handle_ws_message({"type": "PROCESS_STATE", "payload": status_msg})
 
         # 1. 꽉 채우는 다크 레드 비상 대피용 도화지 생성
@@ -731,14 +756,14 @@ class FoodWasteGUI:
         self.error_bg_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
 
         # 2. 비상 타이틀 컴포넌트
-        lbl_emoji = ctk.CTkLabel(self.error_bg_frame, text="🛑" if is_collision else "🚨", font=("맑은 고딕", 80))
+        lbl_emoji = ctk.CTkLabel(self.error_bg_frame, text="STOP" if is_collision else "EMERGENCY", font=("NanumGothic", 80))
         lbl_emoji.pack(pady=(80, 10))
 
         display_title = "HARDWARE INTERLOCK CRITICAL DROP ERROR" if is_collision else "EMERGENCY STOP ACTIVATED"
         lbl_title = ctk.CTkLabel(
             self.error_bg_frame, 
             text=display_title, 
-            font=("Consolas", 24, "bold"), 
+            font=("DejaVu Sans Mono", 24, "bold"), 
             text_color="#ff4d6d"
         )
         lbl_title.pack(pady=10)
@@ -764,7 +789,7 @@ class FoodWasteGUI:
         lbl_guide = ctk.CTkLabel(
             self.error_bg_frame, 
             text=guide_text, 
-            font=("맑은 고딕", 14, "bold"), 
+            font=("NanumGothic", 14, "bold"), 
             text_color="#ffffff",
             justify="center"
         )
@@ -778,7 +803,7 @@ class FoodWasteGUI:
             text="동작 재개 (RESUME)" if can_resume else "처음으로 (HOME)",
             width=260,
             height=48,
-            font=("맑은 고딕", 15, "bold"),
+            font=("NanumGothic", 15, "bold"),
             fg_color="#1f7ecb",
             hover_color="#145a93",
             text_color="#ffffff",
@@ -794,7 +819,7 @@ class FoodWasteGUI:
                 text="↔  수평 이동 요청 (Manual Axis Override)  ↔",
                 width=340,
                 height=52,
-                font=("맑은 고딕", 15, "bold"),
+                font=("NanumGothic", 15, "bold"),
                 fg_color="#7a3a00",
                 hover_color="#a05000",
                 text_color="#ffcc66",
@@ -808,8 +833,8 @@ class FoodWasteGUI:
         # 5. 하단 고정 인터록 잠금 캡션 바
         lbl_status = ctk.CTkLabel(
             self.error_bg_frame, 
-            text="🔒 SYSTEM LOCK / 원격 관리 권한 해제 대기 중...", 
-            font=("맑은 고딕", 12, "italic"), 
+            text="CLOSE SYSTEM LOCK / 원격 관리 권한 해제 대기 중...", 
+            font=("NanumGothic", 12, "italic"), 
             text_color="#a8b3c2"
         )
         lbl_status.pack(side="bottom", pady=25)

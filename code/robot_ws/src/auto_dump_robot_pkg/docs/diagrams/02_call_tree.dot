@@ -1,0 +1,32 @@
+digraph call_tree {
+  rankdir=TB;
+  graph [fontname="Noto Sans CJK KR", fontsize=14, label="정상 공정 함수 호출 트리", labelloc=t];
+  node  [fontname="Noto Sans CJK KR", shape=box, style="rounded,filled", fontsize=11, fillcolor="#eef4ff"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10];
+
+  START [label="handle_robot_command('START')", fillcolor="#cfe2ff"];
+  WK    [label="_run_process_worker()\n(스레드 + _process_lock)", fillcolor="#cfe2ff"];
+  RP    [label="run_process(mode)", fillcolor="#9fc5ff"];
+
+  S1 [label="① check_system_ready()\nhome 이동, 그리퍼 open"];
+  S2 [label="② pick_bin()\n수거통 파지"];
+  S3 [label="③ run_dump_motion(mode)\n배출 + 털기"];
+  S4 [label="④ execute_wash()\n세척+밸브+오수배출"];
+  S5 [label="⑤ return_bin_and_complete()\n원위치 + COMPLETE"];
+
+  SH [label="run_periodic_dump_shake()"];
+  AF [label="apply_wash_place_force()\n힘제어 안착"];
+  WV [label="밸브 grasp→close→open"];
+  WS [label="run_periodic_water_shake()"];
+
+  SAFE [label="safe_movej / safe_movel\nsafe_move_periodic / safe_wait", fillcolor="#ffe9b0"];
+  SW   [label="safety_watch() (10ms 주기)\n비상정지 / 외력40N / 낙하 감시", fillcolor="#ffc9c9"];
+
+  START -> WK -> RP;
+  RP -> S1; RP -> S2; RP -> S3; RP -> S4; RP -> S5;
+  S3 -> SH;
+  S4 -> AF; S4 -> WV; S4 -> WS;
+  S1 -> SAFE; S2 -> SAFE; S3 -> SAFE; S5 -> SAFE;
+  SH -> SAFE; AF -> SAFE; WS -> SAFE;
+  SAFE -> SW;
+}

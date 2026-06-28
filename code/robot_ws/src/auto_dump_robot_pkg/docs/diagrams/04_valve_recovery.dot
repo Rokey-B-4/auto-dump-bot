@@ -1,0 +1,28 @@
+digraph valve_recovery {
+  rankdir=TB;
+  graph [fontname="Noto Sans CJK KR", fontsize=14, label="밸브 복구 로직 (operate_water_valve_after_reset)", labelloc=t];
+  node  [fontname="Noto Sans CJK KR", shape=box, style="rounded,filled", fontsize=11, fillcolor="#eef4ff"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10];
+
+  IN    [label="operate_water_valve_after_reset(stage)", fillcolor="#9fc5ff"];
+  J     [label="세척 지그 주변 단계?", shape=diamond, fillcolor="#ffe9b0"];
+  LEAVE [label="leave_wash_jig_after_reset()\n경유점까지 탈출"];
+  K     [label="stage 판정", shape=diamond, fillcolor="#ffe9b0"];
+
+  REL  [label="_release_valve_and_leave\n놓고 경유점으로", fillcolor="#c7f0c2"];
+  T1   [label="TURNING (돌리는 중)\nmovej(_valve_turn_target_posj)\n= 남은 각도만 마저 돌림"];
+  T2   [label="TURNED / RETURNING\nmovej(_valve_turn_start_posj)\n= 원위치 복귀"];
+  FULL [label="잡기 전/직후\nwash_app_j부터 처음부터\ngrasp→close→open 재수행"];
+
+  IN -> J;
+  J -> LEAVE [label="예"];
+  J -> K     [label="아니오"];
+  LEAVE -> K;
+  K -> REL  [label="RETURNED"];
+  K -> T1   [label="TURNING"];
+  K -> T2   [label="TURNED/RETURNING"];
+  K -> FULL [label="그 외"];
+  T1 -> T2;
+  T2 -> REL;
+  FULL -> REL;
+}

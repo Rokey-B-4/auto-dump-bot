@@ -85,7 +85,7 @@ ROBOT_CONTROLLER_SAFETY_STATES = {3, 5, 6, 8, 9, 10, 15}
 
 # 외력제어 파라미터
 FORCE_TH = 20.0  # place시 외력감지 Threshold
-DESIRED_FORCE_X = 0.0     # 세척 위치 안착 방향 힘[N] - 베이스 좌표계 +X 방향
+DESIRED_FORCE_X = 30.0     # 세척 위치 안착 방향 힘[N] - 베이스 좌표계 +X 방향
 DESIRED_FORCE_Z = 10.0     # 세척 위치 Z방향 힘[N] - 실기 테스트 후 조정
 COMPLIANCE_X = 300         # X 순응 강성 - 낮을수록 +X 방향 접촉면을 부드럽게 따라감
 COMPLIANCE_Y = 3000        # Y 순응 강성 - Y방향의 불필요한 움직임을 억제
@@ -821,15 +821,17 @@ def run_periodic_dump_shake(mode):
     if mode == DUMP_MODE_NORMAL:
         amp = DUMP_NORMAL_PERIODIC_AMP
         period = DUMP_NORMAL_PERIOD
+        status_text = "일반 털기"
     elif mode == DUMP_MODE_STRONG:
         amp = DUMP_STRONG_PERIODIC_AMP
         period = DUMP_STRONG_PERIOD
+        status_text = "강하게 털기"
     else:
         raise ValueError("dump mode must be 1(normal) or 2(strong)")
 
     status.set_state(
         ProcessState.DUMPING,
-        f"periodic shaking {SHAKE_REPEAT_COUNT} cycles",
+        status_text,
     )
     safe_move_periodic(
         amp=amp,
@@ -872,7 +874,7 @@ def run_periodic_water_shake():
     """water_out_tilt 자세를 중심으로 Tool X축 주기 운동을 수행한다."""
     status.set_state(
         ProcessState.WASHING,
-        f"periodic water shaking {SHAKE_REPEAT_COUNT} cycles",
+        f"물기 털기",
     )
     safe_move_periodic(
         amp=WATER_PERIODIC_AMP,

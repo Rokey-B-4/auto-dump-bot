@@ -1,0 +1,31 @@
+digraph reset_recovery {
+  rankdir=TB;
+  graph [fontname="Noto Sans CJK KR", fontsize=14, label="RESET 복구 분기 (recover_after_emergency_stop)", labelloc=t];
+  node  [fontname="Noto Sans CJK KR", shape=box, style="rounded,filled", fontsize=11, fillcolor="#eef4ff"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10];
+
+  R   [label="RESET 수신", fillcolor="#cfe2ff"];
+  BLK [label="컨트롤러 안전정지?\nblock_reset_if_controller_safety_stop", shape=diamond, fillcolor="#ffe9b0"];
+  STOP[label="복구 차단 (ERROR 발행)", fillcolor="#ffc9c9"];
+  BR  [label="recover_after_emergency_stop()", fillcolor="#9fc5ff"];
+  Q1  [label="마지막 stage 위치 판정\n(recovery_stage_at_least)", shape=diamond, fillcolor="#ffe9b0"];
+
+  H  [label="IDLE/READY/COMPLETE\n→ 통있으면 원위치, 없으면 홈"];
+  F1 [label="BIN_PICK_FAILED\n→ reset_bin_pick_failed_to_home"];
+  F2 [label="DUMP_* (배출 중)\n→ 수평복구 후 홈"];
+  F3 [label="< WASTE_DUMPED (미배출)\n→ 통 원위치 후 홈"];
+  F4 [label="< WATER_DUMPED (세척 중)\n→ 세척 세부단계 이어가기", fillcolor="#c7f0c2"];
+  F5 [label="else (세척완료 후)\n→ 통 원위치 후 홈"];
+
+  G1 [label="leave_wash_jig_after_reset\n지그 이탈"];
+  G2 [label="operate_water_valve_after_reset\n밸브 남은 동작만"];
+  G3 [label="recover_bin_from_wash_jig\n통 재파지"];
+  G4 [label="dump_remaining_water_after_reset\n남은 물 배출"];
+
+  R -> BLK;
+  BLK -> STOP [label="예"];
+  BLK -> BR   [label="아니오"];
+  BR -> Q1;
+  Q1 -> H; Q1 -> F1; Q1 -> F2; Q1 -> F3; Q1 -> F4; Q1 -> F5;
+  F4 -> G1; F4 -> G2; F4 -> G3; F4 -> G4;
+}
