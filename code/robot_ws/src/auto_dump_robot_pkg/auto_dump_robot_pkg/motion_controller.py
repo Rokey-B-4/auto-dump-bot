@@ -445,26 +445,40 @@ status = None
 # [DR에 없거나 불안정한 함수 보완] 
 # ==============================================================================
 def stop(mode=None): # 역할: 로봇을 멈추게 하는 브레이크
-    """DRL stop()과 동일한 목적의 ROS2 MoveStop 래퍼."""
-    stop_mode = _ds.DR_QSTOP if mode is None else mode #  비상 정지 버튼의 강도를 정하고, 로봇에게 신호를 보낼 직통 전화선을 연다.
+    """Jazzy와 Humble의 서비스 경로를 모두 지원하는 MoveStop 래퍼."""
+    stop_mode = _ds.DR_QSTOP if mode is None else mode
     node = stop_node if stop_node is not None else dsr_node
+    service_names = (
+        f"/{ROBOT_ID}/dsr_controller2/motion/move_stop",  # Jazzy/new driver
+        f"/{ROBOT_ID}/motion/move_stop",                  # Humble driver
+        "motion/move_stop",                               # node namespace relative
+    )
 
     with _stop_call_lock:
-        client = node.create_client(
-            MoveStop,
-            f"/{ROBOT_ID}/dsr_controller2/motion/move_stop",
-        )
-        if not client.wait_for_service(timeout_sec=0.3):
-            return -1
-        # 역할: 브레이크 명령을 전송하고, 로봇이 실제로 멈췄는지 확인
+        for service_name in service_names:
+            client = node.create_client(MoveStop, service_name)
+            if not client.wait_for_service(timeout_sec=0.2):
+                continue
 
-        req = MoveStop.Request()
-        req.stop_mode = int(stop_mode)
-        future = client.call_async(req)
-        rclpy.spin_until_future_complete(node, future, timeout_sec=0.8)
-        result = future.result() if future.done() else None
-        return 0 if result and result.success else -1
+            req = MoveStop.Request()
+            req.stop_mode = int(stop_mode)
+            future = client.call_async(req)
+            rclpy.spin_until_future_complete(node, future, timeout_sec=0.8)
+            result = future.result() if future.done() else None
+            if result is not None and result.success:
+                g_node.get_logger().warning(
+                    f"MoveStop 성공: service={service_name}, mode={int(stop_mode)}"
+                )
+                return 0
 
+            g_node.get_logger().error(
+                f"MoveStop 응답 실패: service={service_name}, mode={int(stop_mode)}"
+            )
+
+    g_node.get_logger().error(
+        f"MoveStop 서비스를 찾지 못했거나 호출에 실패했습니다: {service_names}"
+    )
+    return -1
 
 def request_motion_stop(reason: str = ""):
     """현재 모션에 정지 요청을 보낸다. QSTOP 실패 시 QSTOP_STO까지 한 번 더 시도한다."""
@@ -1455,12 +1469,19 @@ def handle_robot_command(msg: String):
 
         _emergency_stop_requested.clear()
         g_node.get_logger().info(f"공정 시작 명령 수신: task_id={task_id}, mode_id={mode_id}")
+
         try:
-            ok, result_message = run_process(mode_id)
-            log = g_node.get_logger().info if ok else g_node.get_logger().error
-            log(f"task_id={task_id}: {result_message}")
-        finally:
+            process_thread = threading.Thread(
+                target=_run_process_worker,
+                args=(task_id, mode_id),
+                daemon=True,
+                name=f"process-{task_id}",
+            )
+            process_thread.start()
+        except Exception:
+            # 워커 시작 실패 시 다음 START가 영구 차단되지 않도록 락을 되돌린다.
             _process_lock.release()
+            raise
         return
 
     # --------------------------------------------------------------------------
