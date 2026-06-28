@@ -316,9 +316,6 @@ class ManagerGUI:
         lbl_sec_title = ctk.CTkLabel(safety_frame, text=title_text, font=("맑은 고딕", 16, "bold"), text_color=title_col)
         lbl_sec_title.pack(anchor="w", padx=20, pady=(20, 10))
 
-        info_box = ctk.CTkTextbox(safety_frame, height=160, fg_color="#1a1d24", border_color=border_col, border_width=1, font=("맑은 고딕", 13), text_color="#ff4d6d" if is_error else "#cbd3dc")
-        info_box.pack(padx=20, pady=10, fill="x")
-        
         status_guide = (
             "⚠️ [CRITICAL EMERGENCY INTERLOCK]\n\n"
             "사용자 단말기 측에서 '수거통 탈락' 혹은 '원격 강제 중단' 신호가 수신되었습니다.\n"
@@ -330,8 +327,19 @@ class ManagerGUI:
             "[정상 가동 안내]\n\n"
             "✅ 현재 메인 시스템 및 로봇 제어 신호가 정상 범주 내에서 유지되고 있습니다.\n"
         )
-        info_box.insert("1.0", status_guide)
-        info_box.configure(state="disabled")
+        info_box = ctk.CTkLabel(
+            safety_frame,
+            text=status_guide,
+            height=160,
+            fg_color="#1a1d24",
+            corner_radius=6,
+            font=("맑은 고딕", 13),
+            text_color="#ff4d6d" if is_error else "#cbd3dc",
+            justify="left",
+            anchor="w",
+            wraplength=780,
+        )
+        info_box.pack(padx=20, pady=10, fill="x")
 
         reset_system_btn = ctk.CTkButton(
             safety_frame, text="🔄 인터록 해제 및 시스템 완전 초기화 (Emergency Recovery)", height=55, font=("맑은 고딕", 14, "bold"),

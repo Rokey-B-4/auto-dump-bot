@@ -577,9 +577,7 @@ class FoodWasteGUI:
 
         # [백업 대비 추가] 화면 생성 전에 도착한 최신 로봇 체크포인트를 즉시 진행 표시에 반영
         self.root.after(0, lambda: self._update_ui_from_recovery_stage(self.recovery_stage))
-
-        # 자동 공정 프로세스 스레드 기동
-        # self.start(self.selected_mode)
+        
 
     # =======================================================
     # 5. 프로세스 제어 
