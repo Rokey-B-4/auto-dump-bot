@@ -353,7 +353,7 @@ def init_robot_api():
     if mode == "real":
         if _ds.set_tcp(TCP_NAME) != 0:
             if _ds.add_tcp(TCP_NAME, TCP_OFFSET) != 0 or _ds.set_tcp(TCP_NAME) != 0:
-                g_node.get_logger().info(f"TCP 등록/선택 실패: {TCP_NAME}")
+                g_node.get_logger().info(f"TCP 등록/선택: {TCP_NAME}")
 
         if _ds.set_tool(TOOL_NAME) != 0:
             if TOOL_CENTER_OF_GRAVITY_MM is None or TOOL_INERTIA is None:
@@ -365,7 +365,7 @@ def init_robot_api():
                 _ds.add_tool(TOOL_NAME, TOOL_WEIGHT_KG, TOOL_CENTER_OF_GRAVITY_MM, TOOL_INERTIA) != 0
                 or _ds.set_tool(TOOL_NAME) != 0
             ):
-                g_node.get_logger().info(f"공구 등록/선택 실패: {TOOL_NAME}")
+                g_node.get_logger().info(f"공구 등록/선택: {TOOL_NAME}")
 
         g_node.get_logger().info(f"Tool/TCP selected: {_ds.get_tool()} / {_ds.get_tcp()}")
     
@@ -439,10 +439,6 @@ class StatusBus:
     def publish_mode(self, mode: int):
         """HMI가 보고 있는 모드 값을 /hmi/mode_cmd로 발행한다."""
         self.mode_pub.publish(Int32(data=mode))
-
-
-# main()에서 StatusBus(node)로 초기화될 전역 상태 버스 인스턴스
-status = None
 
 
 # ==============================================================================
