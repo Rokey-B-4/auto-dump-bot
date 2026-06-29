@@ -210,6 +210,10 @@ _dump_level_pose = None
 _valve_turn_start_posj = None
 _valve_turn_target_posj = None
 
+# ==============================================================================
+# [복구 및 긴급 정지 관련 함수]
+# ==============================================================================
+
 # 복구단계 설정 함수
 def set_recovery_stage(stage: RecoveryStage, msg: str = ""):
     """현재 공정 체크포인트를 갱신한다.
@@ -736,7 +740,7 @@ def safe_wait(seconds: float, require_grasp=False):
         _ds.wait(0.05)
 
 # 수거통을 세척 통에 내려놓을 때 쾅 부딪히지 않고 사람이 손으로 꾹 눌러,
-# 끼우듯 일정한 힘(X축 65N, Z축 10N)으로 부드럽게 밀어 넣습니다.
+# 끼우듯 일정한 힘(X축 30N, Z축 10N)으로 부드럽게 밀어 넣습니다.
 def apply_wash_place_force():
     """세척 위치에서 베이스 좌표계 +X와 Z방향 외력으로 수거통을 안착시킨다."""
     compliance_active = False

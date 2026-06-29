@@ -1,34 +1,87 @@
 digraph architecture {
   rankdir=TB;
-  graph [fontname="Noto Sans CJK KR", fontsize=14, label="motion_controller.py 전체 아키텍처", labelloc=t];
-  node  [fontname="Noto Sans CJK KR", shape=box, style="rounded,filled", fontsize=11];
+  compound=true;
+  graph [fontname="Noto Sans CJK KR", fontsize=15,
+         label="motion_controller.py 아키텍처 + 스레드/노드 spin 관계", labelloc=t];
+  node  [fontname="Noto Sans CJK KR", fontsize=11];
   edge  [fontname="Noto Sans CJK KR", fontsize=10];
 
+  // ===== 외부 =====
   subgraph cluster_ext {
     label="외부 (HMI / 백엔드)"; style=filled; color="#eef4ff"; fontname="Noto Sans CJK KR";
-    HMI [label="HMI 앱 / 웹", fillcolor="#cfe2ff"];
-    BE  [label="FastAPI robot_bridge", fillcolor="#cfe2ff"];
+    HMI [label="HMI 앱 / 웹", shape=box, style="rounded,filled", fillcolor="#cfe2ff"];
+    BE  [label="FastAPI robot_bridge", shape=box, style="rounded,filled", fillcolor="#cfe2ff"];
   }
 
+  // ===== 프로세스 내부 =====
   subgraph cluster_mc {
-    label="motion_controller.py (ros2 run ... motion)"; style=filled; color="#eafbe7"; fontname="Noto Sans CJK KR";
-    CMD  [label="node: food_waste_dump_robot\n명령 구독 + 상태 발행", fillcolor="#c7f0c2"];
-    DSRN [label="node: ..._dsr\nDSR 모션/그리퍼 API", fillcolor="#c7f0c2"];
-    STOP [label="node: ..._stop\n정지/상태조회 서비스", fillcolor="#c7f0c2"];
-    SB   [label="StatusBus\n(상태 토픽 발행)", fillcolor="#9fe39a"];
+    label="motion_controller.py  (ros2 run auto_dump_robot_pkg motion · 단일 프로세스)";
+    style=filled; color="#eafbe7"; fontname="Noto Sans CJK KR";
+
+    // ---- 스레드 (주황, 팔각형) ----
+    subgraph cluster_threads {
+      label="스레드 (실제 실행 주체)"; style=filled; color="#fff2e0"; fontname="Noto Sans CJK KR";
+      EXEC   [label="executor 스레드 ×4\nMultiThreadedExecutor\n/robot/command 콜백 실행",
+              shape=octagon, style=filled, fillcolor="#ffd9a0"];
+      WORKER [label="워커 스레드\n_run_process_worker /\n_run_retry_pick_worker\n→ run_process (모션 수행)",
+              shape=octagon, style=filled, fillcolor="#ffd9a0"];
+      EMER   [label="비상정지/RESET 콜백\n(executor 스레드 위에서 실행)",
+              shape=octagon, style=filled, fillcolor="#ffc9a0"];
+    }
+
+    // ---- 노드 (초록, component) : 스스로 돌지 않는 '통신 창구' ----
+    subgraph cluster_nodes {
+      label="ROS2 노드 (통신 창구 · 스스로 돌지 않음)"; style=filled; color="#e3f7e0"; fontname="Noto Sans CJK KR";
+      NCMD [label="/dsr01/food_waste_dump_robot\n(g_node) 명령 구독 + 상태 발행",
+            shape=component, style=filled, fillcolor="#c7f0c2"];
+      NDSR [label="/dsr01/food_waste_dump_robot_dsr\n(dsr_node) DSR_ROBOT2 모션/그리퍼 API",
+            shape=component, style=filled, fillcolor="#c7f0c2"];
+      NSTOP[label="/dsr01/food_waste_dump_robot_stop\n(stop_node) 정지/상태조회 서비스",
+            shape=component, style=filled, fillcolor="#c7f0c2"];
+    }
+
+    FLAG [label="_emergency_stop_requested\n(threading.Event 플래그)", shape=note, style=filled, fillcolor="#fff0a0"];
+    SB   [label="StatusBus\n상태 토픽 발행", shape=box, style="rounded,filled", fillcolor="#9fe39a"];
   }
 
+  // ===== 하드웨어 =====
   subgraph cluster_hw {
-    label="하드웨어"; style=filled; color="#fff2e0"; fontname="Noto Sans CJK KR";
-    DSR [label="두산 DSR 컨트롤러", fillcolor="#ffd9a0"];
-    RG2 [label="OnRobot RG2 그리퍼", fillcolor="#ffd9a0"];
+    label="하드웨어"; style=filled; color="#ffe9d6"; fontname="Noto Sans CJK KR";
+    DSR [label="두산 DSR 컨트롤러", shape=box, style="rounded,filled", fillcolor="#ffd9a0"];
+    RG2 [label="OnRobot RG2 그리퍼", shape=box, style="rounded,filled", fillcolor="#ffd9a0"];
   }
 
+  // ===== 명령/상태 흐름 =====
   HMI -> BE;
-  BE  -> CMD  [label="/robot/command (JSON)"];
-  CMD -> SB;
-  SB  -> BE   [label="상태 토픽 6종", style=dashed];
-  DSRN -> DSR [label="movej/movel/force ..."];
-  DSRN -> RG2 [label="SetCommand o/c"];
-  STOP -> DSR [label="MoveStop / GetRobotState"];
+  BE  -> NCMD [label="/robot/command (JSON)"];
+  NCMD -> SB;
+  SB  -> BE   [style=dashed, label="/robot/process_state · /robot/motion_status\n/robot/safety_event · /robot/recovery_stage\n/gripper/status · /hmi/mode_cmd"];
+
+  // ===== spin 관계 (굵은 색 화살표가 핵심) =====
+  // 상시 spin: executor 스레드가 명령 노드를 계속 돌림
+  EXEC -> NCMD [label="상시 spin", color="#1565c0", penwidth=2.2, fontcolor="#1565c0"];
+
+  // 콜백 → 워커 스레드 생성
+  EXEC -> WORKER [label="START/RETRY_PICK\n→ 스레드 생성 후 즉시 반환", style=dashed, color="#555555"];
+
+  // 호출 시 spin: 워커가 dsr_node를 잠깐 빌려 돌림
+  WORKER -> NDSR [label="호출 시 spin\n(movej·check_motion·get_tool_force ...)",
+                  color="#2e7d32", penwidth=2.2, fontcolor="#2e7d32"];
+
+  // 호출 시 spin: 비상/RESET 콜백이 stop_node를 잠깐 빌려 돌림
+  EMER -> NSTOP [label="호출 시 spin\n(MoveStop·GetRobotState)",
+                 color="#c62828", penwidth=2.2, fontcolor="#c62828"];
+
+  // ===== 협조적 중단 플래그 =====
+  EMER   -> FLAG   [label="set()", color="#c62828"];
+  FLAG   -> WORKER [label="safety_watch가 10ms마다 읽고\nEmergencyStopError로 탈출", style=dashed, color="#c62828"];
+
+  // ===== 노드 → 하드웨어 =====
+  NDSR -> DSR  [label="movej / movel / move_periodic ..."];
+  NDSR -> RG2  [label="/onrobot/sendCommand (o/c)"];
+  NSTOP -> DSR [label="MoveStop / GetRobotState", color="#c62828"];
+
+  // 레이아웃 힌트
+  { rank=same; EXEC; WORKER; EMER; }
+  { rank=same; NCMD; NDSR; NSTOP; }
 }

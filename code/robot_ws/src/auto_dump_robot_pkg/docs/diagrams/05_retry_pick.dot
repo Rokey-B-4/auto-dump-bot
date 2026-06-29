@@ -1,0 +1,28 @@
+digraph retry_pick {
+  rankdir=TB;
+  graph [fontname="Noto Sans CJK KR", fontsize=14, label="파지 실패 재시도 (RETRY_PICK) 흐름", labelloc=t];
+  node  [fontname="Noto Sans CJK KR", shape=box, style="rounded,filled", fontsize=11, fillcolor="#eef4ff"];
+  edge  [fontname="Noto Sans CJK KR", fontsize=10];
+
+  PB   [label="pick_bin()\ngripper_close → is_grasped?", fillcolor="#9fc5ff"];
+  FAIL [label="통 미감지\nBIN_PICK_FAILED 기록\n(로봇은 bin_pick 위치에 그대로 정지)", fillcolor="#ffc9c9"];
+  BTN  [label="사용자: 통 배치 후\nHMI '배치완료' 버튼", fillcolor="#ffe9b0"];
+  CMD  [label="RETRY_PICK 명령 수신\nhandle_robot_command", fillcolor="#cfe2ff"];
+  GUARD[label="단계 == BIN_PICK_FAILED?\n_process_lock 획득", shape=diamond, fillcolor="#ffe9b0"];
+  WK   [label="_run_retry_pick_worker (스레드)", fillcolor="#cfe2ff"];
+  RG   [label="retry_pick_and_continue(mode)\ngripper_close → is_grasped 재확인"];
+  AGAIN[label="또 실패 → BIN_PICK_FAILED 유지\n(재시도 반복 가능)", fillcolor="#ffc9c9"];
+  OK   [label="BIN_GRASPED → bin_pick_top 들어올림", fillcolor="#9fe39a"];
+  CONT [label="run_dump_motion → execute_wash\n→ return_bin_and_complete\n(③④⑤ 이어서 완주)", fillcolor="#9fe39a"];
+
+  PB -> FAIL [label="통 없음"];
+  FAIL -> BTN;
+  BTN -> CMD;
+  CMD -> GUARD;
+  GUARD -> WK [label="예"];
+  WK -> RG;
+  RG -> AGAIN [label="실패"];
+  RG -> OK [label="성공"];
+  OK -> CONT;
+  AGAIN -> BTN [label="다시 배치", style=dashed];
+}
