@@ -178,20 +178,22 @@ class ManagerGUI:
         for widget in self.sidebar_frame.winfo_children():
             widget.destroy()
 
-        sb_title = ctk.CTkLabel(self.sidebar_frame, text="ROBOT CONTROL PANEL", font=("DejaVu Sans Mono", 16, "bold"), text_color="#4fa3e3")
+        # 타이틀의 이모지를 안전한 시스템 텍스트로 대체
+        sb_title = ctk.CTkLabel(self.sidebar_frame, text="[SYS] CONTROL PANEL", font=("DejaVu Sans Mono", 16, "bold"), text_color="#4fa3e3")
         sb_title.pack(pady=(35, 35))
 
+        # 이모지를 제거하고, 대신 각 메뉴에 대응하는 고유 디자인 색상 매핑 추가
         menus = [
-            ("진행 상태 모니터링", ""),
-            ("안전 시스템 관리", ""),
-            ("하드웨어 수동 제어", ""),
-            ("시스템 로그 관리", "")
+            ("진행 상태 모니터링", "#4fa3e3"),  # 블루
+            ("안전 시스템 관리", "#ff9f43"),    # 오렌지
+            ("하드웨어 수동 제어", "#00fa9a"),  # 그린
+            ("시스템 로그 관리", "#cbd3dc")    # 그레이
         ]
 
-        for menu_name, icon in menus:
+        for menu_name, icon_color in menus:
             btn = ctk.CTkButton(
                 self.sidebar_frame,
-                text=f"  {icon}  {menu_name}",
+                text=f"   {menu_name}",  # 이모지 텍스트 제거
                 font=("NanumGothic", 13, "bold"),
                 height=48,
                 fg_color="transparent",
@@ -203,6 +205,18 @@ class ManagerGUI:
             )
             btn.pack(fill="x", padx=15, pady=4)
             self.menu_buttons[menu_name] = btn
+
+            # ── [대안 1 적용] 버튼 왼쪽에 컴팩트한 사각 컬러 포인트 포인트 도형 강제 오버레이 ──
+            btn.update_idletasks() # 버튼의 실제 컴포넌트 크기 갱신 대기
+            icon_dot = ctk.CTkFrame(
+                btn, 
+                width=6, 
+                height=16, 
+                fg_color=icon_color, 
+                corner_radius=2
+            )
+            # 버튼 내부 왼쪽 구석에 세련된 대시보드 인디케이터 라인으로 배치
+            icon_dot.place(x=15, rely=0.5, anchor="w")
 
     def show_tab(self, tab_name):
         """가상 프레임 단위의 화면 전환을 담당하는 뷰 스위칭 라우터 (안전성 대폭 강화)"""
@@ -259,7 +273,8 @@ class ManagerGUI:
     # =========================================================================
     def view_progress_monitoring(self):
         """TAB 1: 로봇 공정 실시간 진행 대시보드"""
-        title = ctk.CTkLabel(self.main_content_area, text=" 로봇 공정 실시간 진행 상태", font=("NanumGothic", 22, "bold"), text_color="#ffffff")
+        # 타이틀에서 이모지 제거
+        title = ctk.CTkLabel(self.main_content_area, text="로봇 공정 실시간 진행 상태", font=("NanumGothic", 22, "bold"), text_color="#ffffff")
         title.pack(anchor="w", padx=35, pady=(30, 20))
 
         # 1. 상태 레이블 블록
@@ -278,12 +293,14 @@ class ManagerGUI:
         emergency_panel = ctk.CTkFrame(self.main_content_area, fg_color="#1a1d24", border_width=1, border_color="#3e475e" if not is_error else "#ff4d6d", corner_radius=12)
         emergency_panel.pack(fill="x", padx=35, pady=15)
         
-        lbl_panel_title = ctk.CTkLabel(emergency_panel, text="CONTROL 원격 시스템 제어 및 인터록 권한", font=("NanumGothic", 12, "bold"), text_color="#a8b3c2")
+        # 타이틀에서 이모지 제거
+        lbl_panel_title = ctk.CTkLabel(emergency_panel, text="원격 시스템 제어 및 인터록 권한", font=("NanumGothic", 12, "bold"), text_color="#a8b3c2")
         lbl_panel_title.pack(anchor="w", padx=20, pady=(15, 8))
         
+        # 버튼 텍스트에서 이모지 제거
         self.remote_stop_btn = ctk.CTkButton(
             emergency_panel,
-            text="EMERGENCY 원격 긴급 비상 정지 (Remote Emergency Stop)", height=50, font=("NanumGothic", 14, "bold"),
+            text="원격 긴급 비상 정지 (Remote Emergency Stop)", height=50, font=("NanumGothic", 14, "bold"),
             fg_color="#d9534f" if not is_error else "#5c1e24", hover_color="#c9302c", text_color="#ffffff", corner_radius=10,
             state="normal", command=self.execute_remote_emergency_stop
         )
@@ -293,12 +310,27 @@ class ManagerGUI:
         stats_card = ctk.CTkFrame(self.main_content_area, fg_color="#2d3343", corner_radius=12)
         stats_card.pack(fill="both", expand=True, padx=35, pady=(10, 30))
 
-        lbl_stats_title = ctk.CTkLabel(stats_card, text=" 누적 장비 가동 통계", font=("NanumGothic", 13, "bold"), text_color="#ffffff")
+        lbl_stats_title = ctk.CTkLabel(stats_card, text="누적 장비 가동 통계", font=("NanumGothic", 13, "bold"), text_color="#ffffff")
         lbl_stats_title.pack(anchor="w", padx=20, pady=(15, 10))
 
         self.lbl_counter = ctk.CTkLabel(stats_card, text=f"총 누적 배출 공정 횟수 :   {self.total_cycles} 회", font=("DejaVu Sans Mono", 16, "bold"), text_color="#00fa9a")
         self.lbl_counter.pack(anchor="w", padx=25, pady=10)
 
+        # ── [대안 1 적용] 각 섹션 타이틀 왼쪽에 모던한 컬러 사각 포인트 오버레이 ──
+        self.main_content_area.update_idletasks()
+        
+        # 1번 카드 타이틀 포인트 (블루)
+        p1 = ctk.CTkFrame(title, width=6, height=20, fg_color="#4fa3e3", corner_radius=2)
+        p1.place(x=-15, rely=0.5, anchor="w")
+        
+        # 2번 패널 타이틀 포인트 (레드/오렌지)
+        p2 = ctk.CTkFrame(lbl_panel_title, width=5, height=14, fg_color="#ff4d6d" if is_error else "#ff9f43", corner_radius=1.5)
+        p2.place(x=-12, rely=0.5, anchor="w")
+        
+        # 3번 카드 타이틀 포인트 (그린)
+        p3 = ctk.CTkFrame(lbl_stats_title, width=5, height=14, fg_color="#00fa9a", corner_radius=1.5)
+        p3.place(x=-12, rely=0.5, anchor="w")
+        # ──────────────────────────────────────────────────────────────────────────────────
     def view_safety_management(self):
         """TAB 2: 안전 인터록 대응 및 시스템 조치 복구 스크린"""
         title = ctk.CTkLabel(self.main_content_area, text=" 안전 제어 및 시스템 복구 조작", font=("NanumGothic", 22, "bold"), text_color="#ffffff")

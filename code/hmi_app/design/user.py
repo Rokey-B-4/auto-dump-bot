@@ -428,8 +428,17 @@ class FoodWasteGUI:
         guide_frame = ctk.CTkFrame(self.main_container, fg_color="transparent")
         guide_frame.place(relx=0.5, rely=0.5, anchor="center")
 
-        icon_label = ctk.CTkLabel(guide_frame, text="BIN", font=("NanumGothic", 85), text_color="#4fa3e3")
-        icon_label.pack(pady=(0, 15))
+        # 1. 수거통 아이콘을 감싸는 베이스 프레임 (외곽 틀)
+        bin_icon_frame = ctk.CTkFrame(guide_frame, width=80, height=90, fg_color="transparent", border_width=4, border_color="#4fa3e3", corner_radius=10)
+        bin_icon_frame.pack(pady=(0, 20))
+        bin_icon_frame.pack_propagate(False)
+
+        # 2. 내부 쓰레기 잔량이나 그래픽을 표현하는 미니 가로선/포인트 도형
+        bin_line = ctk.CTkFrame(bin_icon_frame, width=40, height=4, fg_color="#4fa3e3", corner_radius=2)
+        bin_line.place(relx=0.5, rely=0.4, anchor="center")
+
+        bin_line2 = ctk.CTkFrame(bin_icon_frame, width=25, height=4, fg_color="#4fa3e3", corner_radius=2)
+        bin_line2.place(relx=0.5, rely=0.6, anchor="center")
 
         guide_text = ctk.CTkLabel(guide_frame, text="지정된 위치에 통을 놓아주세요.", font=("NanumGothic", 32, "bold"), text_color="#ffffff")
         guide_text.pack(pady=15)
@@ -478,6 +487,18 @@ class FoodWasteGUI:
             "수거통의 정렬 상태를 다시 확인한 후 확실하게 밀착시켜 주세요!"
         )
         msg_box = CTkMessagebox(title="WARNING 수거통 배치 오류 안내", message=error_message, icon="warning", option_1="확인", corner_radius=12, width=500)
+        # ── [대안 1 적용] 기존 팝업 내부 아이콘 위치에 주황색 사각 벡터 도형 강제 오버레이 ──
+        if hasattr(msg_box, "icon_label") and msg_box.icon_label.winfo_exists():
+            # 기존 느낌표 이모지 텍스트 컴포넌트 숨기기
+            msg_box.icon_label.configure(text="") 
+            
+            # 이모지 자리에 주황색 사각 아이콘 박스 배치
+            warning_box = ctk.CTkFrame(msg_box.icon_label, width=42, height=42, fg_color="transparent", border_width=3, border_color="#ff9f43", corner_radius=8)
+            warning_box.place(relx=0.5, rely=0.5, anchor="center")
+            
+            # 내부 느낌표 기호 세그먼트
+            ctk.CTkFrame(warning_box, width=4, height=14, fg_color="#ff9f43", corner_radius=1).place(relx=0.5, rely=0.38, anchor="center")
+            ctk.CTkFrame(warning_box, width=4, height=4, fg_color="#ff9f43", corner_radius=1).place(relx=0.5, rely=0.75, anchor="center")
         response = msg_box.get()
 
         if response == "확인":
@@ -755,9 +776,24 @@ class FoodWasteGUI:
         self.error_bg_frame = ctk.CTkFrame(self.root, fg_color="#4c1f24", corner_radius=0)
         self.error_bg_frame.place(relx=0, rely=0, relwidth=1, relheight=1)
 
-        # 2. 비상 타이틀 컴포넌트
-        lbl_emoji = ctk.CTkLabel(self.error_bg_frame, text="STOP" if is_collision else "EMERGENCY", font=("NanumGothic", 80))
-        lbl_emoji.pack(pady=(80, 10))
+        # 2. 비상 타이틀 컴포넌트 ── [대안 1 적용: 대형 사각 벡터 비상 아이콘] ──
+        # 이모지 라벨(lbl_emoji) 대신 투명 프레임 베이스 배치
+        icon_container = ctk.CTkFrame(self.error_bg_frame, fg_color="transparent")
+        icon_container.pack(pady=(80, 20))
+
+        # 테두리 굵은 비상 정지 사각 박스 (충돌은 적색, 수동 정지는 주황색 계열)
+        border_color = "#ff4d6d" if is_collision else "#ff9f43"
+        warning_box = ctk.CTkFrame(
+            icon_container, 
+            width=90, 
+            height=90, 
+            fg_color="transparent", 
+            border_width=6, 
+            border_color=border_color, 
+            corner_radius=15
+        )
+        warning_box.pack()
+        warning_box.pack_propagate(False)
 
         display_title = "HARDWARE INTERLOCK CRITICAL DROP ERROR" if is_collision else "EMERGENCY STOP ACTIVATED"
         lbl_title = ctk.CTkLabel(
@@ -1128,4 +1164,4 @@ class FoodWasteGUI:
         self.handle_process_complete()
         
 if __name__ == "__main__":
-    FoodWasteGUI()
+    FoodWasteGUI()  
