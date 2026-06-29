@@ -1,0 +1,6 @@
+.git
+**/__pycache__
+**/*.pyc
+code/robot_ws/build
+code/robot_ws/install
+code/robot_ws/log
