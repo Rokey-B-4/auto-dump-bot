@@ -245,6 +245,16 @@ async def reset_robot(payload: ResetRequest):
         logger.error("reset_robot 처리 중 에러 발생", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.post("/robot/retry-pick", summary="수거통 재파지 후 중단 공정 재개")
+async def retry_bin_pick(payload: TaskStartRequest):
+    """최초 파지 실패 위치에서 수거통을 다시 잡고 기존 공정을 이어가도록 요청한다."""
+    try:
+        bridge_manager.publish_command(command_type="RETRY_PICK", mode_id=payload.mode_id)
+        return {"result": "SUCCESS", "message": "수거통 재파지 명령이 전달되었습니다."}
+    except Exception as e:
+        logger.error("retry_bin_pick 처리 중 에러 발생", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 # [핵심 API 7] 수동 관절각 제어 (/robot/move-joint)
 @router.post("/robot/move-joint", summary="6축 관절각 수동 제어 및 그리퍼 우회 제어 (MoveJ)")
 # 관리자 GUI 슬라이더 조작 후 '관절각 일괄 전송(MoveJ)'을 누르면 호출

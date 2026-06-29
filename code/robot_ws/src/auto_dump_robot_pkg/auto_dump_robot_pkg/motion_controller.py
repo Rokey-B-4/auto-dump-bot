@@ -1384,6 +1384,26 @@ def run_process(mode: int):
             pass
         return False, str(exc)
 
+
+def retry_pick_and_continue(mode: int):
+    """최초 파지 실패 위치에서 수거통을 재파지하고 남은 공정을 이어서 수행한다."""
+    if get_recovery_stage() != RecoveryStage.BIN_PICK_FAILED:
+        raise RuntimeError(f"재파지를 수행할 수 없는 단계입니다: {get_recovery_stage().value}")
+    status.set_state(ProcessState.MOVING, "수거통 재파지 중")
+    gripper_close()
+    safe_wait(0.8)
+    if not is_grasped():
+        status.publish_safety(ErrorCode.ERR_PICK, "수거통 재파지 실패 - 배치 상태를 다시 확인해 주세요")
+        set_recovery_stage(RecoveryStage.BIN_PICK_FAILED, "수거통 재파지 실패")
+        gripper_open()
+        raise RuntimeError("수거통의 위치를 다시 확인해 주세요")
+    set_recovery_stage(RecoveryStage.BIN_GRASPED, "수거통 재파지 확인 완료")
+    safe_movel_relative(coordinates()["bin_pick_top"], require_grasp=True)
+    run_dump_motion(mode)
+    execute_wash()
+    return_bin_and_complete()
+    return True, "수거통 재파지 후 배출 및 세척 완료"
+
 # 공정 실행 중복 방지 락: acquire 상태에서 새 START 명령이 들어오면 즉시 거부(blocking=False)
 _process_lock = threading.Lock()
 
@@ -1402,6 +1422,16 @@ def _run_process_worker(task_id, mode_id):
             g_node.get_logger().info(f"task_id={task_id}: 안전정지 처리 완료 - {result_message}")
         else:
             g_node.get_logger().error(f"task_id={task_id}: {result_message}")
+    finally:
+        _process_lock.release()
+
+def _run_retry_pick_worker(mode_id):
+    try:
+        ok, message = retry_pick_and_continue(mode_id)
+        (g_node.get_logger().info if ok else g_node.get_logger().error)(message)
+    except Exception as exc:
+        status.set_state(ProcessState.ERROR, str(exc))
+        g_node.get_logger().error(f"수거통 재파지 처리 실패: {exc}")
     finally:
         _process_lock.release()
 
@@ -1482,6 +1512,25 @@ def handle_robot_command(msg: String):
             process_thread.start()
         except Exception:
             # 워커 시작 실패 시 다음 START가 영구 차단되지 않도록 락을 되돌린다.
+            _process_lock.release()
+            raise
+        return
+
+    elif cmd_type == "RETRY_PICK":
+        mode_id = command.get("mode_id")
+        if isinstance(mode_id, bool) or mode_id not in (DUMP_MODE_NORMAL, DUMP_MODE_STRONG):
+            g_node.get_logger().error(f"RETRY_PICK mode_id 오류: {mode_id!r}")
+            return
+        if get_recovery_stage() != RecoveryStage.BIN_PICK_FAILED:
+            g_node.get_logger().warning(f"RETRY_PICK 무시 - 현재 단계={get_recovery_stage().value}")
+            return
+        if not _process_lock.acquire(blocking=False):
+            g_node.get_logger().warning("이미 공정이 진행 중입니다. RETRY_PICK 무시.")
+            return
+        _emergency_stop_requested.clear()
+        try:
+            threading.Thread(target=_run_retry_pick_worker, args=(mode_id,), daemon=True, name="retry-bin-pick").start()
+        except Exception:
             _process_lock.release()
             raise
         return
