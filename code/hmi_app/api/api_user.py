@@ -17,6 +17,10 @@ class UserAPI(BaseAPI):
         """긴급정지 후 로봇의 체크포인트 기반 복구 동작을 요청합니다."""
         return self._post("/api/robot/reset", {})
 
+    def retry_bin_pick(self, mode_id):
+        """최초 수거통 파지 실패 후 현재 파지 위치에서 공정을 재개합니다."""
+        return self._post("/api/robot/retry-pick", {"mode_id": mode_id}, timeout=10)
+
     # 에러 로그 전송
     # 백엔드: POST /api/error/log  → ErrorLogRequest { task_id, error_code, error_msg }
     # ★ 수정: 기존 "message" 키 → 백엔드 스펙에 맞게 "error_msg" 로 변경
@@ -57,4 +61,3 @@ class UserAPI(BaseAPI):
             "/api/robot/move-joint",
             gripper_packet
         )
-    

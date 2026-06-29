@@ -484,9 +484,20 @@ class FoodWasteGUI:
             " [배치 오류] 통이 감지되지 않았습니다! \n"
             "━━━━━━━━━━━━━━━━━━━━━━\n\n"
             "지정된 위치에 수거통이 없거나 올바르게 밀착되지 않았습니다.\n"
-            "수거통의 정렬 상태를 다시 확인한 후 확실하게 밀착시켜 주세요!"
+            "수거통의 정렬 상태를 다시 확인한 후 확실하게 밀착시켜 주세요.\n\n"
+            "배치가 완료되면 아래의 '배치 완료' 버튼을 눌러 주세요.\n"
+            "로봇이 수거통을 다시 잡고 중단된 동작을 이어서 수행합니다.\n"
+            "작업을 취소하려면 '처음 위치로' 버튼을 눌러 주세요."
         )
-        msg_box = CTkMessagebox(title="WARNING 수거통 배치 오류 안내", message=error_message, icon="warning", option_1="확인", corner_radius=12, width=500)
+        msg_box = CTkMessagebox(
+            title="WARNING 수거통 배치 오류 안내",
+            message=error_message,
+            icon="warning",
+            option_1="처음 위치로",
+            option_2="배치 완료",
+            corner_radius=12,
+            width=500,
+        )
         # ── [대안 1 적용] 기존 팝업 내부 아이콘 위치에 주황색 사각 벡터 도형 강제 오버레이 ──
         if hasattr(msg_box, "icon_label") and msg_box.icon_label.winfo_exists():
             # 기존 느낌표 이모지 텍스트 컴포넌트 숨기기
@@ -501,10 +512,49 @@ class FoodWasteGUI:
             ctk.CTkFrame(warning_box, width=4, height=4, fg_color="#ff9f43", corner_radius=1).place(relx=0.5, rely=0.75, anchor="center")
         response = msg_box.get()
 
-        if response == "확인":
+        if response == "배치 완료":
+            self._retry_bin_pick()
+        elif response == "처음 위치로":
+            self._return_home_after_pick_failure()
+
+    def _retry_bin_pick(self):
+        """파지 실패 위치에서 재파지를 요청하고 진행 화면을 유지합니다."""
+        try:
+            self._ignore_safety_before = time.time()
+            response = self.api_service.retry_bin_pick(self.selected_mode)
+            if response is None or not (200 <= response.status_code < 300):
+                raise RuntimeError("백엔드가 수거통 재파지 요청을 거절했습니다.")
+            self.in_error_state = False
+            self.is_running = True
+            if hasattr(self, "status") and self.status and self.status.winfo_exists():
+                self.status.configure(text="수거통 재파지 중", text_color="#ffffff")
+        except Exception as exc:
+            self.in_error_state = True
             self.is_running = False
-            if hasattr(self, "home_btn") and self.home_btn and self.home_btn.winfo_exists():
-                self.home_btn.pack(pady=0)
+            CTkMessagebox(title="재파지 요청 실패", message=str(exc), icon="cancel", option_1="확인")
+
+    def _return_home_after_pick_failure(self):
+        """파지 실패 위치에서 수직으로 빠져나온 뒤 홈 위치로 복귀합니다."""
+        try:
+            self._discard_queued_events()
+            self._ignore_safety_before = time.time()
+            self._pending_recovery_action = "HOME"
+            self.is_running = False
+            response = self.api_service.reset_robot_system()
+            if response is None or not (200 <= response.status_code < 300):
+                raise RuntimeError("백엔드가 처음 위치 복귀 요청을 거절했습니다.")
+            if hasattr(self, "status") and self.status and self.status.winfo_exists():
+                self.status.configure(text="통 위로 이동 후 처음 위치로 복귀 중", text_color="#ffffff")
+            self._restart_process_queue()
+        except Exception as exc:
+            self._pending_recovery_action = None
+            self.in_error_state = True
+            CTkMessagebox(
+                title="처음 위치 복귀 실패",
+                message=str(exc),
+                icon="cancel",
+                option_1="확인",
+            )
 
     def verify_and_start_process(self):
         """배치 완료 시 먼저 서버 연결을 시도하고, 성공하거나 통신이 유지될 때만 메인 UI를 빌드합니다."""
@@ -1164,4 +1214,4 @@ class FoodWasteGUI:
         self.handle_process_complete()
         
 if __name__ == "__main__":
-    FoodWasteGUI()  
+    FoodWasteGUI()
