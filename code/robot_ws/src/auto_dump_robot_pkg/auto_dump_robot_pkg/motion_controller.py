@@ -279,8 +279,6 @@ def coordinates():
         "wash_approach_j": posj(0.92, 38.79, 130.96, 180.1, 78.8, -89.2),
         "wash_place": posx(0, 0, 45, 0, 0, 0),
         # 수도꼭지 컨트롤
-        # [branch_motion.py 대비 수정] 실제 밸브 접근 자세에 맞춰 보정된 현재 관절 좌표입니다.
-        # 기존 좌표(-16.92, 52.98, 31.28, 50.5, 101.02, -56.09)를 대체합니다.
         "wash_app_j": posj(-11.23, 50.7, 25.46, 36.49, 101.75, -56.09),
         "wash_open": posx(0, 0, 0, -140, 0, 0),
         "wash_close": posx(0, 0, 0, 140, 0, 0),
@@ -904,7 +902,7 @@ def execute_wash():
     set_recovery_stage(RecoveryStage.WASH_PLACING, "세척 위치에 수거통 내려놓는 중")
     safe_movel_relative(coords["wash_place"], require_grasp=True)
     apply_wash_place_force() # 수거통을 세척 지그(Jig)에 내려놓을 때 쾅 부딪히지 않고 사람이 손으로 꾹 눌러 끼우듯,
-    # 일정한 힘(X축 65N, Z축 10N)으로 부드럽게 밀어 넣습니다.
+    # 일정한 힘(X축 30N, Z축 10N)으로 부드럽게 밀어 넣습니다.
     set_recovery_stage(RecoveryStage.WASH_JIG_PLACED, "세척 위치 안착 완료")
 
     # 세척 위치에 수거통을 내려놓고 수도 레버를 조작한다.
