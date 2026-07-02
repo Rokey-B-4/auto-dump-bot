@@ -4,7 +4,7 @@ from datetime import datetime
 import os
 
 import requests
-from api.api_manager import AdminAPI
+from hmi_app.api.api_manager import AdminAPI
 import queue
 
 class ManagerGUI:
@@ -569,8 +569,10 @@ class ManagerGUI:
        
         def safe_ui_update():
             if not self.window.winfo_exists(): return
-            if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
-                self.lbl_monitor_status.configure(text="[CONTROL] 수동 관절 제어 명령 수행 중", text_color="#f1c40f")
+            # 상태 라벨은 진행 상태 모니터링 탭에서만 생성되므로 None 여부를 먼저 확인
+            monitor_status = getattr(self, "lbl_monitor_status", None)
+            if monitor_status is not None and monitor_status.winfo_exists():
+                monitor_status.configure(text="[CONTROL] 수동 관절 제어 명령 수행 중", text_color="#f1c40f")
             
             CTkMessagebox(
                 title="전송 완료",
@@ -670,8 +672,9 @@ class ManagerGUI:
         if not self.window.winfo_exists():
             return
         self.show_tab("진행 상태 모니터링")
-        if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
-            self.lbl_monitor_status.configure(
+        monitor_status = getattr(self, "lbl_monitor_status", None)
+        if monitor_status is not None and monitor_status.winfo_exists():
+            monitor_status.configure(
                 text=f"[RESET] {recovery_text}",
                 text_color="#4fa3e3",
             )
@@ -701,8 +704,9 @@ class ManagerGUI:
                 self.show_tab("진행 상태 모니터링")
                 
                 # 4단계: 탭이 바뀐 후 위젯이 완벽히 생성되었는지 '다시 확인'하고 텍스트 주입
-                if hasattr(self, "lbl_monitor_status") and self.lbl_monitor_status.winfo_exists():
-                    self.lbl_monitor_status.configure(
+                monitor_status = getattr(self, "lbl_monitor_status", None)
+                if monitor_status is not None and monitor_status.winfo_exists():
+                    monitor_status.configure(
                         text=" 시스템 복구 완료 (대기 중)", 
                         text_color="#00fa9a"
                     )

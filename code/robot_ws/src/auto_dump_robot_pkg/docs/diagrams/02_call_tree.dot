@@ -22,6 +22,10 @@ digraph call_tree {
   SAFE [label="safe_movej / safe_movel\nsafe_move_periodic / safe_wait", fillcolor="#ffe9b0"];
   SW   [label="safety_watch() (10ms 주기)\n비상정지 / 외력40N / 낙하 감시", fillcolor="#ffc9c9"];
 
+  FAIL [label="통 미감지 → BIN_PICK_FAILED\n(그 자리 정지, ERR_PICK 발행)", fillcolor="#ffc9c9"];
+  RT   [label="RETRY_PICK 명령\n_run_retry_pick_worker()", fillcolor="#cfe2ff"];
+  RTC  [label="retry_pick_and_continue(mode)\n재파지 후 ③④⑤ 이어서 수행", fillcolor="#9fe39a"];
+
   START -> WK -> RP;
   RP -> S1; RP -> S2; RP -> S3; RP -> S4; RP -> S5;
   S3 -> SH;
@@ -29,4 +33,9 @@ digraph call_tree {
   S1 -> SAFE; S2 -> SAFE; S3 -> SAFE; S5 -> SAFE;
   SH -> SAFE; AF -> SAFE; WS -> SAFE;
   SAFE -> SW;
+
+  S2 -> FAIL [label="통 없음", style=dashed, color="#cc0000"];
+  FAIL -> RT [label="통 배치 후\n배치완료 버튼", style=dashed];
+  RT -> RTC;
+  RTC -> S3 [label="처음부터가 아니라\n남은 공정만", style=dashed, color="#2a7a2a"];
 }

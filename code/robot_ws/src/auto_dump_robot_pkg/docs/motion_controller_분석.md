@@ -1,11 +1,12 @@
 # `motion_controller.py` 구조 분석 문서
 
-> 대상 파일: [`auto_dump_robot_pkg/motion_controller.py`](../auto_dump_robot_pkg/motion_controller.py) (1646줄)
+> 대상 파일: [`auto_dump_robot_pkg/motion_controller.py`](../auto_dump_robot_pkg/motion_controller.py) (1695줄)
 > 로봇: 두산 협동로봇 **M0609** (`dsr01`) + OnRobot **RG2** 그리퍼
 > 역할: 음식물 수거통 **자동 배출 → 세척 → 오수 배출 → 원위치 복귀** 공정 제어 및 안전/복구
+> 최종 갱신: 2026-06-29 (파지 실패 재시도 `RETRY_PICK` 기능 반영)
 
 이 문서는 코드를 4개 관점(노드 → 통신 → 함수 호출 → 상태머신)으로 분해하고,
-설계상 가장 까다로운 3개 부분(**콜백 그룹 / 힘제어 안착 / 밸브 복구**)을 심화 분석합니다.
+설계상 가장 까다로운 4개 부분(**콜백 그룹 / 힘제어 안착 / 밸브 복구 / 파지 실패 재시도**)을 심화 분석합니다.
 
 다이어그램은 두 형태로 제공합니다.
 - 본문 내 **Mermaid** 블록 (VSCode·GitHub에서 바로 렌더링)
@@ -22,11 +23,16 @@
 6. [심화① 콜백 그룹 동작](#6-심화-콜백-그룹-동작-비상정지-우선순위)
 7. [심화② 힘제어 안착 (apply_wash_place_force)](#7-심화-힘제어-안착-apply_wash_place_force)
 8. [심화③ 밸브 복구 로직](#8-심화-밸브-복구-로직)
-9. [부록: 전역 상태/락 정리](#9-부록-전역-상태--락-정리)
+9. [심화④ 파지 실패 재시도 (RETRY_PICK)](#9-심화-파지-실패-재시도-retry_pick)
+10. [부록: 전역 상태/락 정리](#10-부록-전역-상태--락-정리)
 
 ---
 
 ## 1. 전체 아키텍처
+
+아래 다이어그램은 **아키텍처 + 스레드/노드 spin 관계**를 함께 보여줍니다.
+주황 팔각형 = **스레드(실제 실행 주체)**, 초록 = **ROS2 노드(스스로 돌지 않는 통신 창구)** 입니다.
+화살표 색: 파랑 = `상시 spin`, 초록/빨강 = `호출 시 spin`(노드를 잠깐 빌려 돌림).
 
 ```mermaid
 flowchart TB
@@ -35,14 +41,22 @@ flowchart TB
         BE["FastAPI robot_bridge"]
     end
 
-    subgraph MC["motion_controller.py (ros2 run ... motion)"]
-        CMDNODE["node: food_waste_dump_robot<br/>명령 구독 + 상태 발행"]
-        DSRNODE["node: ..._dsr<br/>DSR 모션/그리퍼 API"]
-        STOPNODE["node: ..._stop<br/>정지/상태조회 서비스"]
-        SB["StatusBus<br/>(상태 토픽 발행)"]
+    subgraph MC["motion_controller.py (ros2 run auto_dump_robot_pkg motion · 단일 프로세스)"]
+        subgraph THREADS["스레드 (실제 실행 주체)"]
+            EXEC["executor 스레드 ×4<br/>MultiThreadedExecutor<br/>/robot/command 콜백 실행"]
+            WORKER["워커 스레드<br/>_run_process_worker / _run_retry_pick_worker<br/>→ run_process (모션 수행)"]
+            EMER["비상정지/RESET 콜백<br/>(executor 스레드 위에서 실행)"]
+        end
+        subgraph NODES["ROS2 노드 (통신 창구 · 스스로 돌지 않음)"]
+            CMDNODE["/dsr01/food_waste_dump_robot<br/>(g_node) 명령 구독 + 상태 발행"]
+            DSRNODE["/dsr01/food_waste_dump_robot_dsr<br/>(dsr_node) DSR_ROBOT2 모션/그리퍼 API"]
+            STOPNODE["/dsr01/food_waste_dump_robot_stop<br/>(stop_node) 정지/상태조회 서비스"]
+        end
+        FLAG["_emergency_stop_requested<br/>(threading.Event 플래그)"]
+        SB["StatusBus<br/>상태 토픽 발행"]
     end
 
-    subgraph HW["하드웨어 계층"]
+    subgraph HW["하드웨어"]
         DSR["두산 DSR 컨트롤러"]
         RG2["OnRobot RG2 그리퍼"]
     end
@@ -50,19 +64,33 @@ flowchart TB
     HMI --> BE
     BE -->|"/robot/command (JSON)"| CMDNODE
     CMDNODE --> SB
-    SB -->|"/robot/process_state 등 6개 토픽"| BE
-    DSRNODE -->|"movej/movel/force ..."| DSR
-    DSRNODE -->|"SetCommand o/c"| RG2
+    SB -->|"/robot/process_state · motion_status · safety_event<br/>recovery_stage · gripper/status · hmi/mode_cmd"| BE
+
+    EXEC ==>|"상시 spin"| CMDNODE
+    EXEC -.->|"START/RETRY_PICK → 스레드 생성 후 즉시 반환"| WORKER
+    WORKER ==>|"호출 시 spin (movej·check_motion·get_tool_force ...)"| DSRNODE
+    EMER ==>|"호출 시 spin (MoveStop·GetRobotState)"| STOPNODE
+
+    EMER -->|"set()"| FLAG
+    FLAG -.->|"safety_watch가 10ms마다 읽고 EmergencyStopError로 탈출"| WORKER
+
+    DSRNODE -->|"movej / movel / move_periodic ..."| DSR
+    DSRNODE -->|"/onrobot/sendCommand (o/c)"| RG2
     STOPNODE -->|"MoveStop / GetRobotState"| DSR
 ```
 
 PNG: [`diagrams/01_architecture.png`](./diagrams/01_architecture.png)
 
+> **핵심 읽는 법**
+> - 노드(초록)는 스스로 돌지 않습니다. **상시 도는 것은 `food_waste_dump_robot` 하나뿐**(executor가 spin).
+> - `dsr_node`/`stop_node`는 **호출하는 스레드가 그 순간에만 `spin_until_future_complete`로 잠깐 빌려 돌립니다.**
+> - 모션은 **워커 스레드**에서 순차 수행(`dsr_node` 사용), 비상정지는 **별도 콜백**이 **`stop_node`로 동시에** `MoveStop` 전송 — 노드가 분리돼 있어 같은 노드를 두 스레드가 spin하는 충돌이 없습니다.
+
 ---
 
 ## 2. ROS2 노드 구조 (3개로 분리한 이유)
 
-[`main()`](../auto_dump_robot_pkg/motion_controller.py#L1582)은 **단일 프로세스 안에서 노드 3개**를 생성합니다.
+[`main()`](../auto_dump_robot_pkg/motion_controller.py#L1631)은 **단일 프로세스 안에서 노드 3개**를 생성합니다.
 이것이 이 코드의 가장 중요한 설계 결정입니다.
 
 | 노드 | 변수 | 역할 | 누가 spin? |
@@ -97,7 +125,7 @@ flowchart LR
 flowchart TB
     T["/robot/command<br/>std_msgs/String (JSON)"]
     T -->|ReentrantCallbackGroup| H1["handle_emergency_stop_priority()<br/>EMERGENCY_STOP만 선처리"]
-    T -->|MutuallyExclusiveCallbackGroup| H2["handle_robot_command()<br/>START/MOVE_JOINT/HW/RESET 등"]
+    T -->|MutuallyExclusiveCallbackGroup| H2["handle_robot_command()<br/>START/RETRY_PICK/MOVE_JOINT/HW/RESET 등"]
 ```
 
 ### 3.2 발행 — [`StatusBus`](../auto_dump_robot_pkg/motion_controller.py#L394) 클래스가 전담
@@ -137,6 +165,7 @@ flowchart TB
     RP --> S5["⑤ return_bin_and_complete()<br/>원위치 + COMPLETE"]
 
     S2 --> M["safe_movej / safe_movel_relative"]
+    S2 -.->|"통 미감지<br/>BIN_PICK_FAILED"| FAIL["공정 중단 + ERR_PICK 발행"]
     S3 --> SH["run_periodic_dump_shake()"]
     S4 --> AF["apply_wash_place_force()"]
     S4 --> WV["밸브 grasp→close→open"]
@@ -145,9 +174,19 @@ flowchart TB
     SH --> SW
     AF --> SW
     SW["safety_watch()<br/>(10ms 주기)"]
+
+    FAIL -.->|"통 배치 후<br/>RETRY_PICK 명령"| RT["_run_retry_pick_worker()"]
+    RT --> RTC["retry_pick_and_continue(mode)<br/>재파지 → ③④⑤ 이어서 수행"]
+    RTC --> S3
 ```
 
 PNG: [`diagrams/02_call_tree.png`](./diagrams/02_call_tree.png)
+
+> **[2026-06-29 추가] 파지 실패 재시도 경로**
+> `pick_bin()`이 통을 못 잡으면 `BIN_PICK_FAILED` 체크포인트를 남기고 공정을 중단합니다.
+> 사용자가 통을 제자리에 놓고 HMI의 "배치완료" 버튼을 누르면 `RETRY_PICK` 명령이 들어와,
+> 로봇은 **현재 파지 위치에서 그대로 재파지**한 뒤 ③배출→④세척→⑤복귀를 이어서 수행합니다.
+> (처음부터 다시 시작하지 않음 — 자세한 내용은 [심화④](#9-심화-파지-실패-재시도-retry_pick))
 
 ### 안전 래퍼 패턴 (모든 모션의 공통 골격)
 
@@ -258,10 +297,11 @@ sequenceDiagram
 
 세 가지 장치가 함께 작동합니다.
 
-1. **워커 스레드 분리** — [`_run_process_worker`](../auto_dump_robot_pkg/motion_controller.py#L1391)
+1. **워커 스레드 분리** — [`_run_process_worker`](../auto_dump_robot_pkg/motion_controller.py#L1411)
    `handle_robot_command`의 START는 `threading.Thread`를 띄우고 **즉시 반환**합니다. 콜백이 모션 동안 점유되지 않습니다.
+   재파지(`RETRY_PICK`)도 같은 패턴의 [`_run_retry_pick_worker`](../auto_dump_robot_pkg/motion_controller.py#L1428) 워커를 사용합니다.
 
-2. **비상정지 전용 콜백** — [`handle_emergency_stop_priority`](../auto_dump_robot_pkg/motion_controller.py#L1428)
+2. **비상정지 전용 콜백** — [`handle_emergency_stop_priority`](../auto_dump_robot_pkg/motion_controller.py#L1458)
    같은 토픽을 `ReentrantCallbackGroup`으로 한 번 더 구독해, 일반 콜백이 바빠도 EMERGENCY_STOP만 먼저 잡습니다.
 
 3. **플래그 기반 협조적 중단** — `_emergency_stop_requested` (Event)
@@ -361,7 +401,56 @@ PNG: [`diagrams/04_valve_recovery.png`](./diagrams/04_valve_recovery.png)
 
 ---
 
-## 9. 부록: 전역 상태 / 락 정리
+## 9. 심화④ 파지 실패 재시도 (RETRY_PICK)
+
+> **[2026-06-29 신규 기능]** git 커밋 "통 감지 x시 동작 구현 — 통 배치 후 동작 재개하도록 배치완료 버튼 추가"
+
+### 문제
+공정 2단계 [`pick_bin()`](../auto_dump_robot_pkg/motion_controller.py#L794)에서 그리퍼를 닫았는데 통이 없으면(미감지),
+기존에는 공정 전체가 실패로 끝났습니다. 다시 하려면 처음(home·이동·파지)부터 START를 해야 했습니다.
+
+### 해결: 멈춘 자리에서 재파지 → 남은 공정만 이어가기
+통을 못 잡으면 `pick_bin()`은 **로봇을 그 자리(`bin_pick` 하강 위치)에 둔 채** `BIN_PICK_FAILED` 체크포인트를 남기고 멈춥니다.
+사용자가 통을 제자리에 놓고 HMI의 **"배치완료" 버튼**을 누르면 `RETRY_PICK` 명령이 들어옵니다.
+
+```mermaid
+sequenceDiagram
+    participant U as 사용자(HMI)
+    participant BE as 백엔드
+    participant HC as handle_robot_command
+    participant WK as _run_retry_pick_worker
+    participant R as 로봇
+
+    Note over R: pick_bin() 통 미감지<br/>→ BIN_PICK_FAILED (그 자리 정지)
+    U->>BE: 통 배치 후 "배치완료" 클릭
+    BE->>HC: RETRY_PICK (mode_id)
+    HC->>HC: 단계 == BIN_PICK_FAILED 확인<br/>_process_lock 획득
+    HC->>WK: 워커 스레드 시작 후 즉시 반환
+    WK->>R: retry_pick_and_continue(mode)
+    Note over R: gripper_close → is_grasped 확인<br/>→ bin_pick_top 들어올림<br/>→ ③배출 ④세척 ⑤복귀
+```
+
+PNG: [`diagrams/05_retry_pick.png`](./diagrams/05_retry_pick.png)
+
+### 동작 — [`retry_pick_and_continue(mode)`](../auto_dump_robot_pkg/motion_controller.py#L1388)
+
+1. **가드**: 현재 단계가 `BIN_PICK_FAILED`가 아니면 거부(`RuntimeError`).
+2. `gripper_close()` → `safe_wait(0.8)` → `is_grasped()` 재확인.
+   - 또 실패하면 `BIN_PICK_FAILED`를 유지하고 다시 멈춤 → **재시도를 몇 번이든 반복 가능**.
+3. 성공하면 `BIN_GRASPED`로 올린 뒤 `bin_pick_top`으로 들어올림.
+4. `run_dump_motion(mode)` → `execute_wash()` → `return_bin_and_complete()` 로 **③→④→⑤ 그대로 이어서** 완주.
+
+### 명령 라우팅 — [`handle_robot_command`](../auto_dump_robot_pkg/motion_controller.py#L1519) `RETRY_PICK` 케이스
+- `mode_id` 유효성 검사(1 또는 2)
+- 현재 단계가 `BIN_PICK_FAILED`일 때만 수락(아니면 무시 로그)
+- `_process_lock`을 `blocking=False`로 획득(중복 방지) 후 [`_run_retry_pick_worker`](../auto_dump_robot_pkg/motion_controller.py#L1428) 스레드 시작
+
+> 설계 일관성: START와 동일하게 **"워커 스레드 + `_process_lock` + 즉시 반환"** 패턴을 그대로 따릅니다.
+> 덕분에 재파지 도중에도 EMERGENCY_STOP이 [심화①](#6-심화-콜백-그룹-동작-비상정지-우선순위)의 우선순위 콜백으로 즉시 처리됩니다.
+
+---
+
+## 10. 부록: 전역 상태 / 락 정리
 
 ### 함수 내 import로 채워지는 DSR 핸들
 DSR 모듈은 `DR_init.__dsr__node` 등록 후 import해야 하므로, `init_robot_api()`에서 동적으로 채워집니다.
@@ -385,11 +474,12 @@ DSR 모듈은 `DR_init.__dsr__node` 등록 후 import해야 하므로, `init_rob
 
 ---
 
-## 명령 진입점 요약 ([`handle_robot_command`](../auto_dump_robot_pkg/motion_controller.py#L1441))
+## 명령 진입점 요약 ([`handle_robot_command`](../auto_dump_robot_pkg/motion_controller.py#L1471))
 
 | command_type | 동작 |
 |--------------|------|
 | `START` | task_id/mode_id 검증 → 워커 스레드로 전체 공정 |
+| `RETRY_PICK` | 파지 실패(`BIN_PICK_FAILED`) 시 재파지 후 남은 공정 재개 ([심화④](#9-심화-파지-실패-재시도-retry_pick)) |
 | `HARDWARE_CONTROL` | 수동 그리퍼 OPEN/CLOSE |
 | `MOVE_JOINT` | 수동 6축 관절각 이동(MoveJ) |
 | `EMERGENCY_STOP` | 즉시 정지(락 무관) |
