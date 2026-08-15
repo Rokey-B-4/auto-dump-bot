@@ -7,6 +7,7 @@
 ROS2(Humble) 로봇 제어 노드, FastAPI 백엔드, Tkinter/CustomTkinter 기반 사용자·관리자 HMI 3계층으로 구성되며, 외력 감지 기반 능동형 안전 제어와 체크포인트 기반 비상정지 복구 로직을 갖추고 있습니다.
 
 > 참고 자료: 팀 발표자료(`auto-dump-bot 최종 PPT.pdf`) 및 GitHub 저장소 [`Rokey-B-4/auto-dump-bot`](https://github.com/Rokey-B-4/auto-dump-bot)
+
 > 발표자료 및 시연영상 링크: https://drive.google.com/drive/folders/1HgJJUFLrXR3NEuuhsMuC4EJS37tfkn0L?usp=drive_link
 
 ---
