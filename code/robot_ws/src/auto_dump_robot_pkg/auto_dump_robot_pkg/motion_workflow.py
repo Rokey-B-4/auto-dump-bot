@@ -38,6 +38,7 @@ from .motion_runtime import (
     safe_movel_relative,
     safe_wait,
     set_recovery_stage,
+    check_system_ready
 )
 
 # 아래 세 참조는 main()에서 런타임 초기화가 끝난 뒤 sync_runtime_refs()로 갱신한다.
